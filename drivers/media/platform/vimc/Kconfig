@@ -1,6 +1,7 @@
 config VIDEO_VIMC
 	tristate "Virtual Media Controller Driver (VIMC)"
 	select VIDEO_V4L2_SUBDEV_API
+	select VIDEO_TPG
 	default n
 	---help---
 	  Skeleton driver for Virtual Media Controller
