@@ -1,5 +1,5 @@
 /*
- * vivid-tpg.h - Test Pattern Generator
+ * tpg.h - Test Pattern Generator
  *
  * Copyright 2014 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
@@ -17,8 +17,8 @@
  * SOFTWARE.
  */
 
-#ifndef _VIVID_TPG_H_
-#define _VIVID_TPG_H_
+#ifndef _TPG_H_
+#define _TPG_H_
 
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -26,8 +26,7 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/videodev2.h>
-
-#include "vivid-tpg-colors.h"
+#include <media/tpg-colors.h>
 
 enum tpg_pattern {
 	TPG_PAT_75_COLORBAR,

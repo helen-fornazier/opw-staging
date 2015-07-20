@@ -1,0 +1,5 @@
+config VIDEO_TPG
+	tristate "Test Pattern Generator (TPG)"
+	default n
+	---help---
+	  Export functions to generate image patterns used in vivid and vimc drivers

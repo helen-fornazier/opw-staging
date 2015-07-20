@@ -21,11 +21,11 @@
 #define _VIVID_CORE_H_
 
 #include <linux/fb.h>
+#include <media/tpg.h>
 #include <media/videobuf2-core.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-ctrls.h>
-#include "vivid-tpg.h"
 #include "vivid-rds-gen.h"
 #include "vivid-vbi-gen.h"
 
