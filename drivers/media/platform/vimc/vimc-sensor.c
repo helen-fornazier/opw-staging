@@ -27,11 +27,8 @@
 #define VIMC_SEN_FRAME_MAX_WIDTH 4096
 
 struct vimc_sen_device {
-	struct vimc_ent_device ved;
-	struct v4l2_subdev sd;
+	struct vimc_ent_subdevice vsd;
 	struct tpg_data tpg;
-	struct v4l2_device *v4l2_dev;
-	struct device *dev;
 	struct task_struct *kthread_sen;
 	u8 *frame;
 	/* The active format */
@@ -46,7 +43,7 @@ static int vimc_sen_enum_mbus_code(struct v4l2_subdev *sd,
 	struct vimc_sen_device *vsen = v4l2_get_subdevdata(sd);
 
 	/* Check if it is a valid pad */
-	if (code->pad >= vsen->sd.entity.num_pads)
+	if (code->pad >= vsen->vsd.sd.entity.num_pads)
 		return -EINVAL;
 
 	code->code = vsen->mbus_format.code;
@@ -61,7 +58,7 @@ static int vimc_sen_enum_frame_size(struct v4l2_subdev *sd,
 	struct vimc_sen_device *vsen = v4l2_get_subdevdata(sd);
 
 	/* Check if it is a valid pad */
-	if (fse->pad >= vsen->sd.entity.num_pads)
+	if (fse->pad >= vsen->vsd.sd.entity.num_pads)
 		return -EINVAL;
 
 	/* TODO: Add support to other formats */
@@ -121,11 +118,6 @@ static const struct v4l2_subdev_pad_ops vimc_sen_pad_ops = {
 	.set_fmt		= vimc_sen_get_fmt,
 };
 
-/* media operations */
-static const struct media_entity_operations vimc_sen_mops = {
-	.link_validate = v4l2_subdev_link_validate,
-};
-
 static int vimc_thread_sen(void *data)
 {
 	unsigned int i;
@@ -141,10 +133,12 @@ static int vimc_thread_sen(void *data)
 		tpg_fill_plane_buffer(&vsen->tpg, V4L2_STD_PAL, 0, vsen->frame);
 
 		/* Send the frame to all source pads */
-		for (i = 0; i < vsen->sd.entity.num_pads; i++)
-			vimc_propagate_frame(vsen->dev,
-					     &vsen->sd.entity.pads[i],
-					     vsen->frame);
+		for (i = 0; i < vsen->vsd.sd.entity.num_pads; i++) {
+			struct media_pad *pad = &vsen->vsd.sd.entity.pads[i];
+
+			vimc_propagate_frame(vsen->vsd.sd.v4l2_dev->mdev->dev,
+					     pad, vsen->frame);
+		}
 
 		/* 60 frames per second */
 		schedule_timeout_interruptible(HZ/60);
@@ -178,9 +172,10 @@ static int vimc_sen_s_stream(struct v4l2_subdev *sd, int enable)
 
 		/* Initialize the image generator thread */
 		vsen->kthread_sen = kthread_run(vimc_thread_sen, vsen,
-						"%s-sen", vsen->v4l2_dev->name);
+					"%s-sen", vsen->vsd.sd.v4l2_dev->name);
 		if (IS_ERR(vsen->kthread_sen)) {
-			v4l2_err(vsen->v4l2_dev, "kernel_thread() failed\n");
+			v4l2_err(vsen->vsd.sd.v4l2_dev,
+				 "kernel_thread() failed\n");
 			vfree(vsen->frame);
 			vsen->frame = NULL;
 			return PTR_ERR(vsen->kthread_sen);
@@ -215,13 +210,11 @@ static const struct v4l2_subdev_ops vimc_sen_ops = {
 
 static void vimc_sen_destroy(struct vimc_ent_device *ved)
 {
-	struct vimc_sen_device *vsen = container_of(ved,
-						struct vimc_sen_device, ved);
+	struct vimc_sen_device *vsen = container_of(ved, struct vimc_sen_device,
+						    vsd.ved);
 
 	tpg_free(&vsen->tpg);
-	media_entity_cleanup(ved->ent);
-	v4l2_device_unregister_subdev(&vsen->sd);
-	kfree(vsen);
+	vimc_ent_sd_cleanup(&vsen->vsd);
 }
 
 struct vimc_ent_device *vimc_sen_create(struct v4l2_device *v4l2_dev,
@@ -232,37 +225,21 @@ struct vimc_ent_device *vimc_sen_create(struct v4l2_device *v4l2_dev,
 	int ret;
 	unsigned int i;
 	struct vimc_sen_device *vsen;
+	struct vimc_ent_subdevice *vsd;
 
-	if (!name || (num_pads && !pads_flag))
-		return ERR_PTR(-EINVAL);
 	/* check if all pads are sources */
 	for (i = 0; i < num_pads; i++)
 		if (!(pads_flag[i] & MEDIA_PAD_FL_SOURCE))
 			return ERR_PTR(-EINVAL);
 
-	/* Allocate the vsen struct */
-	vsen = kzalloc(sizeof(*vsen), GFP_KERNEL);
-	if (!vsen)
-		return ERR_PTR(-ENOMEM);
+	vsd = vimc_ent_sd_init(sizeof(struct vimc_sen_device),
+			       name, MEDIA_ENT_F_CAM_SENSOR,
+			       num_pads, pads_flag, &vimc_sen_ops,
+			       vimc_sen_destroy);
+	if (IS_ERR(vsd))
+		return (struct vimc_ent_device *)vsd;
 
-	/* Link the vimc_sen_device struct with the v4l2 parent */
-	vsen->v4l2_dev = v4l2_dev;
-	/* Link the vimc_sen_device struct with the dev parent */
-	vsen->dev = v4l2_dev->dev;
-
-	/* Allocate the pads */
-	vsen->ved.pads = vimc_pads_init(num_pads, pads_flag);
-	if (IS_ERR(vsen->ved.pads)) {
-		ret = PTR_ERR(vsen->ved.pads);
-		goto err_free_vsen;
-	}
-
-	/* Initialize the media entity */
-	vsen->sd.entity.name = name;
-	ret = media_entity_pads_init(&vsen->sd.entity,
-				     num_pads, vsen->ved.pads);
-	if (ret)
-		goto err_clean_pads;
+	vsen = container_of(vsd, struct vimc_sen_device, vsd);
 
 	/* Set the active frame format (this is hardcoded for now) */
 	vsen->mbus_format.width = 640;
@@ -278,41 +255,22 @@ struct vimc_ent_device *vimc_sen_create(struct v4l2_device *v4l2_dev,
 		 vsen->mbus_format.height);
 	ret = tpg_alloc(&vsen->tpg, VIMC_SEN_FRAME_MAX_WIDTH);
 	if (ret)
-		goto err_clean_m_ent;
-
-	/* Fill the vimc_ent_device struct */
-	vsen->ved.destroy = vimc_sen_destroy;
-	vsen->ved.ent = &vsen->sd.entity;
-
-	/* Initialize the subdev */
-	v4l2_subdev_init(&vsen->sd, &vimc_sen_ops);
-	vsen->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
-	vsen->sd.entity.ops = &vimc_sen_mops;
-	vsen->sd.owner = THIS_MODULE;
-	strlcpy(vsen->sd.name, name, sizeof(vsen->sd.name));
-	v4l2_set_subdevdata(&vsen->sd, vsen);
-
-	/* Expose this subdev to user space */
-	vsen->sd.flags = V4L2_SUBDEV_FL_HAS_DEVNODE;
+		goto err_clean_vsd;
 
 	/* Register the subdev with the v4l2 and the media framework */
-	ret = v4l2_device_register_subdev(vsen->v4l2_dev, &vsen->sd);
+	ret = v4l2_device_register_subdev(v4l2_dev, &vsen->vsd.sd);
 	if (ret) {
-		dev_err(vsen->dev,
+		dev_err(vsen->vsd.sd.v4l2_dev->mdev->dev,
 			"subdev register failed (err=%d)\n", ret);
 		goto err_free_tpg;
 	}
 
-	return &vsen->ved;
+	return &vsen->vsd.ved;
 
 err_free_tpg:
 	tpg_free(&vsen->tpg);
-err_clean_m_ent:
-	media_entity_cleanup(&vsen->sd.entity);
-err_clean_pads:
-	vimc_pads_cleanup(vsen->ved.pads);
-err_free_vsen:
-	kfree(vsen);
+err_clean_vsd:
+	vimc_ent_sd_cleanup(vsd);
 
 	return ERR_PTR(ret);
 }

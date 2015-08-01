@@ -39,6 +39,11 @@ struct vimc_ent_device {
 			      struct media_pad *sink, const void *frame);
 };
 
+struct vimc_ent_subdevice {
+	struct vimc_ent_device ved;
+	struct v4l2_subdev sd;
+};
+
 int vimc_propagate_frame(struct device *dev,
 			 struct media_pad *src, const void *frame);
 
@@ -49,6 +54,16 @@ static inline void vimc_pads_cleanup(struct media_pad *pads)
 {
 	kfree(pads);
 }
+
+/* Helper function to initialize/cleanup a subdevice used */
+struct vimc_ent_subdevice *vimc_ent_sd_init(size_t struct_size,
+				const char *const name,
+				u32 function,
+				u16 num_pads,
+				const unsigned long *pads_flag,
+				const struct v4l2_subdev_ops *sd_ops,
+				void (*sd_destroy)(struct vimc_ent_device *));
+void vimc_ent_sd_cleanup(struct vimc_ent_subdevice *vsd);
 
 const struct vimc_pix_map *vimc_pix_map_by_code(u32 code);
 

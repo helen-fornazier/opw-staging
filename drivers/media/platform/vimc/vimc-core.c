@@ -329,6 +329,79 @@ struct media_pad *vimc_pads_init(u16 num_pads, const unsigned long *pads_flag)
 	return pads;
 }
 
+/* media operations */
+static const struct media_entity_operations vimc_ent_sd_mops = {
+	.link_validate = v4l2_subdev_link_validate,
+};
+
+void vimc_ent_sd_cleanup(struct vimc_ent_subdevice *vsd)
+{
+	v4l2_device_unregister_subdev(&vsd->sd);
+	media_entity_cleanup(vsd->ved.ent);
+	vimc_pads_cleanup(vsd->ved.pads);
+	kfree(vsd);
+}
+
+struct vimc_ent_subdevice *vimc_ent_sd_init(size_t struct_size,
+				const char *const name,
+				u32 function,
+				u16 num_pads,
+				const unsigned long *pads_flag,
+				const struct v4l2_subdev_ops *sd_ops,
+				void (*sd_destroy)(struct vimc_ent_device *))
+{
+	int ret;
+	struct vimc_ent_subdevice *vsd;
+
+	/* Check entity configuration params */
+	if (!name || (num_pads && !pads_flag))
+		return ERR_PTR(-EINVAL);
+
+	/* Allocate the vsd struct */
+	vsd = kzalloc(struct_size, GFP_KERNEL);
+	if (!vsd)
+		return ERR_PTR(-ENOMEM);
+
+	/* Allocate the pads */
+	vsd->ved.pads = vimc_pads_init(num_pads, pads_flag);
+	if (IS_ERR(vsd->ved.pads)) {
+		ret = PTR_ERR(vsd->ved.pads);
+		goto err_free_vsd;
+	}
+
+	/* Initialize the media entity */
+	vsd->sd.entity.name = name;
+	ret = media_entity_pads_init(&vsd->sd.entity,
+				     num_pads, vsd->ved.pads);
+	if (ret)
+		goto err_clean_pads;
+
+	/* Fill the vimc_ent_device struct */
+	vsd->ved.destroy = sd_destroy;
+	vsd->ved.ent = &vsd->sd.entity;
+
+	/* Initialize the subdev */
+	v4l2_subdev_init(&vsd->sd, sd_ops);
+	vsd->sd.entity.function = function;
+	vsd->sd.entity.ops = &vimc_ent_sd_mops;
+	vsd->sd.owner = THIS_MODULE;
+	strlcpy(vsd->sd.name, name, sizeof(vsd->sd.name));
+	v4l2_set_subdevdata(&vsd->sd, vsd);
+
+	/* Expose this subdev to user space */
+	vsd->sd.flags = V4L2_SUBDEV_FL_HAS_DEVNODE;
+
+	/* return the created vimc subdevice*/
+	return vsd;
+
+err_clean_pads:
+	vimc_pads_cleanup(vsd->ved.pads);
+err_free_vsd:
+	kfree(vsd);
+
+	return ERR_PTR(ret);
+}
+
 /* TODO: remove this function when all the
  * entities specific code are implemented
  */
