@@ -65,6 +65,11 @@ struct vimc_ent_subdevice *vimc_ent_sd_init(size_t struct_size,
 				void (*sd_destroy)(struct vimc_ent_device *));
 void vimc_ent_sd_cleanup(struct vimc_ent_subdevice *vsd);
 
+/* Helper function to call the s_stream of the subdevice
+ * directly connected with entity
+ */
+int vimc_pipeline_s_stream(struct media_entity *entity, int enable);
+
 const struct vimc_pix_map *vimc_pix_map_by_code(u32 code);
 
 const struct vimc_pix_map *vimc_pix_map_by_pixelformat(u32 pixelformat);
