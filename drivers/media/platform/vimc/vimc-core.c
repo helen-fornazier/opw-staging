@@ -396,6 +396,38 @@ static void vimc_device_unregister(struct vimc_device *vimc)
 	media_device_cleanup(&vimc->mdev);
 }
 
+int vimc_pipeline_s_stream(struct media_entity *ent, int enable)
+{
+	struct v4l2_subdev *sd;
+	struct media_pad *pad;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ent->num_pads; i++) {
+		if (ent->pads[i].flags & MEDIA_PAD_FL_SOURCE)
+			continue;
+
+		/* Start the stream in the subdevice direct connected */
+		pad = media_entity_remote_pad(&ent->pads[i]);
+
+		/*
+		 * if this is a raw node from vimc-core, then there is
+		 * nothing to activate
+		 * TODO: remove this when there are no more raw nodes in the
+		 * core and return error instead
+		 */
+		if (pad->entity->obj_type == MEDIA_ENTITY_TYPE_BASE)
+			continue;
+
+		sd = media_entity_to_v4l2_subdev(pad->entity);
+		ret = v4l2_subdev_call(sd, video, s_stream, enable);
+		if (ret && ret != -ENOIOCTLCMD)
+			return ret;
+	}
+
+	return 0;
+}
+
 /* Helper function to allocate and initialize pads */
 struct media_pad *vimc_pads_init(u16 num_pads, const unsigned long *pads_flag)
 {
