@@ -111,12 +111,41 @@ static void vimc_sen_tpg_s_format(struct vimc_sen_device *vsen)
 	tpg_s_xfer_func(&vsen->tpg, vsen->mbus_format.xfer_func);
 }
 
+static int vimc_sen_set_fmt(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_pad_config *cfg,
+			    struct v4l2_subdev_format *format)
+{
+	struct vimc_sen_device *vsen = v4l2_get_subdevdata(sd);
+	const struct vimc_pix_map *vpix;
+
+	/* TODO: Add support for try format */
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
+		return -EINVAL;
+
+	/* Do not change the format while stream is on */
+	if (vsen->frame)
+		return -EINVAL;
+
+	/* Don't accept a code that is not on the table */
+	vpix = vimc_pix_map_by_code(format->format.code);
+	if (vpix)
+		vsen->mbus_format.code = format->format.code;
+	else
+		format->format.code = vsen->mbus_format.code;
+
+	vimc_ent_sd_set_fsize(&vsen->mbus_format, cfg, format);
+
+	/* Re-configure the test pattern generator */
+	vimc_sen_tpg_s_format(vsen);
+
+	return 0;
+}
+
 static const struct v4l2_subdev_pad_ops vimc_sen_pad_ops = {
 	.enum_mbus_code		= vimc_sen_enum_mbus_code,
 	.enum_frame_size	= vimc_sen_enum_frame_size,
 	.get_fmt		= vimc_sen_get_fmt,
-	/* TODO: Add support to other formats */
-	.set_fmt		= vimc_sen_get_fmt,
+	.set_fmt		= vimc_sen_set_fmt,
 };
 
 static int vimc_thread_sen(void *data)

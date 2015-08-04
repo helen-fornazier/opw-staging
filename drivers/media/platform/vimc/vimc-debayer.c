@@ -202,12 +202,44 @@ static int vimc_deb_get_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int vimc_deb_set_fmt(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_pad_config *cfg,
+			    struct v4l2_subdev_format *format)
+{
+	struct vimc_deb_device *vdeb = v4l2_get_subdevdata(sd);
+	const struct vimc_deb_pix_map *vpix;
+
+	/* TODO: Add support for try format */
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
+		return -EINVAL;
+
+	/* Do not change the format while stream is on */
+	if (vdeb->src_frame)
+		return -EINVAL;
+
+	if (vdeb->vsd.sd.entity.pads[format->pad].flags & MEDIA_PAD_FL_SINK) {
+		/* Don't accept a code that is not on the debayer table */
+		vpix = vimc_deb_pix_map_by_code(format->format.code);
+		if (vpix)
+			vdeb->sink_mbus_fmt.code = format->format.code;
+		else
+			format->format.code = vdeb->sink_mbus_fmt.code;
+
+		vimc_ent_sd_set_fsize(&vdeb->sink_mbus_fmt, cfg, format);
+	} else
+		/* We only support one SRC format for now
+		 * don't change the code
+		 * TODO: chage here when adding more src formats */
+		vimc_ent_sd_set_fsize(&vdeb->src_mbus_fmt, cfg, format);
+
+	return 0;
+}
+
 static const struct v4l2_subdev_pad_ops vimc_deb_pad_ops = {
 	.enum_mbus_code		= vimc_deb_enum_mbus_code,
 	.enum_frame_size	= vimc_deb_enum_frame_size,
 	.get_fmt		= vimc_deb_get_fmt,
-	/* TODO: Add support to other formats */
-	.set_fmt		= vimc_deb_get_fmt,
+	.set_fmt		= vimc_deb_set_fmt,
 };
 
 static void vimc_deb_set_rgb_mbus_fmt_rgb888_1x24(struct vimc_deb_device *vdeb,

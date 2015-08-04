@@ -102,6 +102,59 @@ static int vimc_cap_g_fmt_vid_cap(struct file *file, void *priv,
 	return 0;
 }
 
+static int vimc_cap_s_fmt_vid_cap(struct file *file, void *priv,
+				  struct v4l2_format *f)
+{
+	struct vimc_cap_device *vcap = video_drvdata(file);
+	const struct vimc_pix_map *vpix;
+
+	/* Do not change the format while stream is on */
+	if (vb2_is_busy(&vcap->queue))
+		return -EINVAL;
+
+	/* Accept all non-zero width and height sizes */
+	if (f->fmt.pix.width)
+		vcap->format.width = f->fmt.pix.width;
+	else
+		f->fmt.pix.width = vcap->format.width;
+	if (f->fmt.pix.height)
+		vcap->format.height = f->fmt.pix.height;
+	else
+		f->fmt.pix.height = vcap->format.height;
+
+	/* Don't accept a pixelformat that is not on the table */
+	vpix = vimc_pix_map_by_pixelformat(f->fmt.pix.pixelformat);
+	if (vpix)
+		vcap->format.pixelformat = f->fmt.pix.pixelformat;
+	else {
+		f->fmt.pix.pixelformat = vcap->format.pixelformat;
+		vpix = vimc_pix_map_by_pixelformat(f->fmt.pix.pixelformat);
+	}
+
+	vcap->format.field = f->fmt.pix.field;
+
+	/* Check if bytesperline has the minimum size */
+	if (f->fmt.pix.bytesperline >= vcap->format.width * vpix->bpp)
+		vcap->format.bytesperline = f->fmt.pix.bytesperline;
+	else
+		f->fmt.pix.bytesperline = vcap->format.bytesperline;
+
+	/* Set the size of the image and the flags */
+	f->fmt.pix.sizeimage = vcap->format.width *
+			       vcap->format.height * vpix->bpp;
+	vcap->format.sizeimage = f->fmt.pix.sizeimage;
+	vcap->format.flags = f->fmt.pix.flags;
+
+	/* We don't support changing the colorspace for now */
+	/* TODO: add support for others colorspaces */
+	f->fmt.pix.colorspace = vcap->format.colorspace;
+	f->fmt.pix.ycbcr_enc = vcap->format.ycbcr_enc;
+	f->fmt.pix.quantization = vcap->format.quantization;
+	f->fmt.pix.xfer_func = vcap->format.xfer_func;
+
+	return 0;
+}
+
 static int vimc_cap_enum_fmt_vid_cap(struct file *file, void *priv,
 				     struct v4l2_fmtdesc *f)
 {
@@ -134,7 +187,8 @@ static const struct v4l2_ioctl_ops vimc_cap_ioctl_ops = {
 	.vidioc_s_input = vimc_cap_s_input,
 
 	.vidioc_g_fmt_vid_cap = vimc_cap_g_fmt_vid_cap,
-	.vidioc_s_fmt_vid_cap = vimc_cap_g_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap = vimc_cap_s_fmt_vid_cap,
+	/* TODO: Add support to try format */
 	.vidioc_try_fmt_vid_cap = vimc_cap_g_fmt_vid_cap,
 	.vidioc_enum_fmt_vid_cap = vimc_cap_enum_fmt_vid_cap,
 

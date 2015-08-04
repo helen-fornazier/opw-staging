@@ -108,12 +108,53 @@ static int vimc_sca_get_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int vimc_sca_set_fmt(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_pad_config *cfg,
+			    struct v4l2_subdev_format *format)
+{
+	struct vimc_sca_device *vsca = v4l2_get_subdevdata(sd);
+	const struct vimc_pix_map *vpix;
+
+	/* TODO: Add support for try format */
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
+		return -EINVAL;
+
+	/* Do not change the format while stream is on */
+	if (vsca->src_frame)
+		return -EINVAL;
+
+	/* Do not change the format of the source pad, it is propagated
+	 * from the sink*/
+	if (vsca->vsd.sd.entity.pads[format->pad].flags
+	    & MEDIA_PAD_FL_SOURCE) {
+		format->format = vsca->sink_mbus_fmt;
+		format->format.width = vsca->src_width;
+		format->format.height = vsca->src_height;
+		return 0;
+	}
+
+	/* Don't accept a code that is not on the table
+	 * or are in bayer format */
+	vpix = vimc_pix_map_by_code(format->format.code);
+	if (vpix && !vpix->bayer)
+		vsca->sink_mbus_fmt.code = format->format.code;
+	else
+		format->format.code = vsca->sink_mbus_fmt.code;
+
+	vimc_ent_sd_set_fsize(&vsca->sink_mbus_fmt, cfg, format);
+
+	/* Update the source sizes */
+	vsca->src_width = vsca->sink_mbus_fmt.width * vsca->mult;
+	vsca->src_height = vsca->sink_mbus_fmt.height * vsca->mult;
+
+	return 0;
+}
+
 static const struct v4l2_subdev_pad_ops vimc_sca_pad_ops = {
 	.enum_mbus_code		= vimc_sca_enum_mbus_code,
 	.enum_frame_size	= vimc_sca_enum_frame_size,
 	.get_fmt		= vimc_sca_get_fmt,
-	/* TODO: Add support to other formats */
-	.set_fmt		= vimc_sca_get_fmt,
+	.set_fmt		= vimc_sca_set_fmt,
 };
 
 static int vimc_sca_s_stream(struct v4l2_subdev *sd, int enable)

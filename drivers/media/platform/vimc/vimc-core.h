@@ -28,6 +28,7 @@ struct vimc_pix_map {
 	unsigned int code;
 	unsigned int bpp;
 	u32 pixelformat;
+	bool bayer;
 };
 extern const struct vimc_pix_map vimc_pix_map_list[];
 
@@ -66,6 +67,11 @@ struct vimc_ent_subdevice *vimc_ent_sd_init(size_t struct_size,
 				const struct v4l2_subdev_ops *sd_ops,
 				void (*sd_destroy)(struct vimc_ent_device *));
 void vimc_ent_sd_cleanup(struct vimc_ent_subdevice *vsd);
+
+/* Herper function to set the format of a subdevice node */
+void vimc_ent_sd_set_fsize(struct v4l2_mbus_framefmt *active_fmt,
+			   struct v4l2_subdev_pad_config *cfg,
+			   struct v4l2_subdev_format *format);
 
 /* Helper function to call the s_stream of the subdevice
  * directly connected with entity*/
