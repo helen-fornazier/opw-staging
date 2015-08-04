@@ -26,6 +26,8 @@
 #define VIMC_FRAME_MIN_WIDTH 16
 #define VIMC_FRAME_MIN_HEIGHT 16
 
+#define VIMC_FRAME_INDEX(lin, col, width, bpp) ((lin * width + col) * bpp)
+
 /**
  * struct vimc_pix_map - maps media bus code with v4l2 pixel format
  *
