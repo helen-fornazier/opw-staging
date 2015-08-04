@@ -21,6 +21,8 @@
 #include <linux/slab.h>
 #include <media/v4l2-device.h>
 
+#define VIMC_FRAME_INDEX(lin, col, width, bpp) ((lin * width + col) * bpp)
+
 #define MAX_WIDTH  4096
 #define MAX_HEIGHT 2160
 #define MIN_WIDTH  16
