@@ -23,6 +23,7 @@
 
 #include "vimc-capture.h"
 #include "vimc-core.h"
+#include "vimc-debayer.h"
 #include "vimc-sensor.h"
 
 #define VIMC_PDEV_NAME "vimc"
@@ -637,9 +638,12 @@ static int vimc_device_register(struct vimc_device *vimc)
 			create_func = vimc_cap_create;
 			break;
 
+		case VIMC_ENT_NODE_DEBAYER:
+			create_func = vimc_deb_create;
+			break;
+
 		/* TODO: Instantiate the specific topology node */
 		case VIMC_ENT_NODE_INPUT:
-		case VIMC_ENT_NODE_DEBAYER:
 		case VIMC_ENT_NODE_SCALER:
 		default:
 			/*
