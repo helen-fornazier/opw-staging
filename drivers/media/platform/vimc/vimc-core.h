@@ -20,6 +20,8 @@
 
 #include <media/v4l2-device.h>
 
+#define VIMC_FRAME_INDEX(lin, col, width, bpp) ((lin * width + col) * bpp)
+
 /* Struct which matches the MEDIA_BUS_FMT_ codes with the corresponding
  * V4L2_PIX_FMT_ fourcc pixelformat and its bytes per pixel (bpp) */
 struct vimc_pix_map {
