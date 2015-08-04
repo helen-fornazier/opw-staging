@@ -29,6 +29,8 @@
 
 #define VIMC_PIPE_OPT 1
 
+#define VIMC_FRAME_INDEX(lin, col, width, bpp) ((lin * width + col) * bpp)
+
 /**
  * struct vimc_pix_map - maps media bus code with v4l2 pixel format
  *
