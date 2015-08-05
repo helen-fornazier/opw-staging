@@ -36,6 +36,7 @@ struct vimc_pix_map {
 	unsigned int code;
 	unsigned int bpp;
 	u32 pixelformat;
+	bool bayer;
 };
 extern const struct vimc_pix_map vimc_pix_map_list[];
 
