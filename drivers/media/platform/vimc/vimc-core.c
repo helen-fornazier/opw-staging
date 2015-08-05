@@ -24,6 +24,7 @@
 #include "vimc-capture.h"
 #include "vimc-core.h"
 #include "vimc-debayer.h"
+#include "vimc-scaler.h"
 #include "vimc-sensor.h"
 
 #define VIMC_PDEV_NAME "vimc"
@@ -198,6 +199,10 @@ static const struct vimc_pipeline_config pipe_cfg = {
 
 /* -------------------------------------------------------------------------- */
 
+/*
+ * NOTE: non-bayer formats need to come first (necessary for enum_mbus_code
+ * in the scaler)
+ */
 static const struct vimc_pix_map vimc_pix_map_list[] = {
 	/* TODO: add all missing formats */
 
@@ -206,16 +211,19 @@ static const struct vimc_pix_map vimc_pix_map_list[] = {
 		.code = MEDIA_BUS_FMT_BGR888_1X24,
 		.pixelformat = V4L2_PIX_FMT_BGR24,
 		.bpp = 3,
+		.bayer = false,
 	},
 	{
 		.code = MEDIA_BUS_FMT_RGB888_1X24,
 		.pixelformat = V4L2_PIX_FMT_RGB24,
 		.bpp = 3,
+		.bayer = false,
 	},
 	{
 		.code = MEDIA_BUS_FMT_ARGB8888_1X32,
 		.pixelformat = V4L2_PIX_FMT_ARGB32,
 		.bpp = 4,
+		.bayer = false,
 	},
 
 	/* Bayer formats */
@@ -223,41 +231,49 @@ static const struct vimc_pix_map vimc_pix_map_list[] = {
 		.code = MEDIA_BUS_FMT_SBGGR8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SBGGR8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGBRG8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SGBRG8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGRBG8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SGRBG8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SRGGB8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SRGGB8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SBGGR10_1X10,
 		.pixelformat = V4L2_PIX_FMT_SBGGR10,
 		.bpp = 2,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGBRG10_1X10,
 		.pixelformat = V4L2_PIX_FMT_SGBRG10,
 		.bpp = 2,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGRBG10_1X10,
 		.pixelformat = V4L2_PIX_FMT_SGRBG10,
 		.bpp = 2,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SRGGB10_1X10,
 		.pixelformat = V4L2_PIX_FMT_SRGGB10,
 		.bpp = 2,
+		.bayer = true,
 	},
 
 	/* 10bit raw bayer a-law compressed to 8 bits */
@@ -265,21 +281,25 @@ static const struct vimc_pix_map vimc_pix_map_list[] = {
 		.code = MEDIA_BUS_FMT_SBGGR10_ALAW8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SBGGR10ALAW8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGBRG10_ALAW8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SGBRG10ALAW8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGRBG10_ALAW8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SGRBG10ALAW8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SRGGB10_ALAW8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SRGGB10ALAW8,
 		.bpp = 1,
+		.bayer = true,
 	},
 
 	/* 10bit raw bayer DPCM compressed to 8 bits */
@@ -287,41 +307,49 @@ static const struct vimc_pix_map vimc_pix_map_list[] = {
 		.code = MEDIA_BUS_FMT_SBGGR10_DPCM8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SBGGR10DPCM8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGBRG10_DPCM8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SGBRG10DPCM8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGRBG10_DPCM8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SGRBG10DPCM8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SRGGB10_DPCM8_1X8,
 		.pixelformat = V4L2_PIX_FMT_SRGGB10DPCM8,
 		.bpp = 1,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SBGGR12_1X12,
 		.pixelformat = V4L2_PIX_FMT_SBGGR12,
 		.bpp = 2,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGBRG12_1X12,
 		.pixelformat = V4L2_PIX_FMT_SGBRG12,
 		.bpp = 2,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SGRBG12_1X12,
 		.pixelformat = V4L2_PIX_FMT_SGRBG12,
 		.bpp = 2,
+		.bayer = true,
 	},
 	{
 		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
 		.pixelformat = V4L2_PIX_FMT_SRGGB12,
 		.bpp = 2,
+		.bayer = true,
 	},
 };
 
@@ -642,9 +670,12 @@ static int vimc_device_register(struct vimc_device *vimc)
 			create_func = vimc_deb_create;
 			break;
 
+		case VIMC_ENT_NODE_SCALER:
+			create_func = vimc_sca_create;
+			break;
+
 		/* TODO: Instantiate the specific topology node */
 		case VIMC_ENT_NODE_INPUT:
-		case VIMC_ENT_NODE_SCALER:
 		default:
 			/*
 			 * TODO: remove this when all the entities specific
