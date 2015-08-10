@@ -18,6 +18,8 @@
 #ifndef _VIMC_CORE_H_
 #define _VIMC_CORE_H_
 
+#include <linux/platform_device.h>
+
 #include <media/v4l2-device.h>
 
 #define VIMC_FRAME_INDEX(lin, col, width, bpp) ((lin * width + col) * bpp)
@@ -49,6 +51,9 @@ struct vimc_ent_subdevice {
 
 int vimc_propagate_frame(struct device *dev,
 			 struct media_pad *src, const void *frame);
+
+int vimc_pdev_register(struct platform_device *pdev);
+void vimc_pdev_unregister(struct platform_device *pdev);
 
 /* Helper functions to allocate/initialize pads and free them */
 struct media_pad *vimc_pads_init(u16 num_pads,

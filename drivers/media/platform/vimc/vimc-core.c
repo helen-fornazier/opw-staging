@@ -206,14 +206,6 @@ static const struct vimc_pipeline_config pipe_cfg = {
 
 /* -------------------------------------------------------------------------- */
 
-static void vimc_dev_release(struct device *dev)
-{}
-
-static struct platform_device vimc_pdev = {
-	.name		= VIMC_PDEV_NAME,
-	.dev.release	= vimc_dev_release,
-};
-
 const struct vimc_pix_map vimc_pix_map_list[] = {
 	/* TODO: add all missing formats */
 
@@ -695,32 +687,34 @@ static struct platform_driver vimc_pdrv = {
 	},
 };
 
+int vimc_pdev_register(struct platform_device *pdev)
+{
+	int ret;
+
+	ret = platform_device_register(pdev);
+	if (ret)
+		dev_err(&pdev->dev,
+			"platform device registration failed (err=%d)\n", ret);
+
+	return ret;
+}
+
+void vimc_pdev_unregister(struct platform_device *pdev)
+{
+	platform_device_unregister(pdev);
+}
+
 static int __init vimc_init(void)
 {
 	int ret;
 
-	ret = platform_device_register(&vimc_pdev);
-	if (ret) {
-		dev_err(&vimc_pdev.dev,
-			"platform device registration failed (err=%d)\n", ret);
-		return ret;
-	}
-
 	ret = platform_driver_register(&vimc_pdrv);
-	if (ret) {
-		dev_err(&vimc_pdev.dev,
-			"platform driver registration failed (err=%d)\n", ret);
-
-		platform_device_unregister(&vimc_pdev);
-
+	if (ret)
 		return ret;
-	}
 
-	ret = vimc_cfg_register();
-	if (ret) {
+	ret = vimc_cfg_register(VIMC_PDEV_NAME);
+	if (ret)
 		platform_driver_unregister(&vimc_pdrv);
-		platform_device_unregister(&vimc_pdev);
-	}
 
 	return ret;
 }
@@ -730,8 +724,6 @@ static void __exit vimc_exit(void)
 	vimc_cfg_unregister();
 
 	platform_driver_unregister(&vimc_pdrv);
-
-	platform_device_unregister(&vimc_pdev);
 }
 
 module_init(vimc_init);
