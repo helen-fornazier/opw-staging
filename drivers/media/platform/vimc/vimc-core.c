@@ -23,6 +23,7 @@
 #include <media/v4l2-device.h>
 
 #include "vimc-capture.h"
+#include "vimc-configfs.h"
 #include "vimc-core.h"
 #include "vimc-debayer.h"
 #include "vimc-scaler.h"
@@ -711,6 +712,14 @@ static int __init vimc_init(void)
 			"platform driver registration failed (err=%d)\n", ret);
 
 		platform_device_unregister(&vimc_pdev);
+
+		return ret;
+	}
+
+	ret = vimc_cfg_register();
+	if (ret) {
+		platform_driver_unregister(&vimc_pdrv);
+		platform_device_unregister(&vimc_pdev);
 	}
 
 	return ret;
@@ -718,6 +727,8 @@ static int __init vimc_init(void)
 
 static void __exit vimc_exit(void)
 {
+	vimc_cfg_unregister();
+
 	platform_driver_unregister(&vimc_pdrv);
 
 	platform_device_unregister(&vimc_pdev);
