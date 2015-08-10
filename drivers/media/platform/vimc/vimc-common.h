@@ -22,6 +22,8 @@
 #include <media/media-device.h>
 #include <media/v4l2-device.h>
 
+#define VIMC_MAX_NAME_LEN 32
+
 /* VIMC-specific controls */
 #define VIMC_CID_VIMC_BASE		(0x00f00000 | 0xf000)
 #define VIMC_CID_VIMC_CLASS		(0x00f00000 | 1)
@@ -63,16 +65,62 @@ do {									\
 /**
  * struct vimc_platform_data - platform data to components
  *
- * @entity_name:	The name of the entity to be created
+ * @name:	The name of the device
+ * @group:	The configfs group the device belongs
  *
  * Board setup code will often provide additional information using the device's
  * platform_data field to hold additional information.
- * When injecting a new platform_device in the component system the core needs
- * to provide to the corresponding submodules the name of the entity that should
- * be used when registering the subdevice in the Media Controller system.
+ * When injecting a new platform_device in the component system, the name of the
+ * device is required to allow the system to register it with a proper name.
+ * Also the configfs group is given to allow the driver to add custom items in
+ * the group.
+ * This struct is used by the entity submodules and the core system to be able
+ * to retrieve the name to register the device in the Media Controler system.
  */
 struct vimc_platform_data {
-	char entity_name[32];
+	char name[VIMC_MAX_NAME_LEN];
+	struct config_group *group;
+};
+
+/**
+ * struct vimc_platform_data_link - platform data to components of type link
+ *
+ * @source:	source component of the link
+ * @source_pad:	source pad of the link
+ * @sink:	sink component of the link
+ * @sink_pad:	sink pad of the link
+ * @flags:	flags of the link
+ *
+ * Board setup code will often provide additional information using the device's
+ * platform_data field to hold additional information.
+ * When injecting a new platform_device representing a link in the component
+ * system, source and sink information is required to allow the link module to
+ * create the proper link between entities.
+ */
+struct vimc_platform_data_link {
+	struct platform_device *source;
+	u16 source_pad;
+	struct platform_device *sink;
+	u16 sink_pad;
+	u32 flags;
+	struct list_head list;
+};
+
+/**
+ * struct vimc_platform_data_core - platform data to the core
+ *
+ * @data:	see struct vimc_platform_data
+ * @links:	list of struct vimc_platform_data_link
+ *
+ * Board setup code will often provide additional information using the device's
+ * platform_data field to hold additional information.
+ * When injecting a new platform_device representing the core component, a list
+ * of struct vimc_platform_data_list is required to allow the core to create
+ * create the proper links between entities.
+ */
+struct vimc_platform_data_core {
+	struct vimc_platform_data data;
+	struct list_head *links;
 };
 
 /**

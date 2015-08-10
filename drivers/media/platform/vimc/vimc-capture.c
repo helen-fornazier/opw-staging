@@ -23,6 +23,7 @@
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-vmalloc.h>
 
+#include "vimc-configfs.h"
 #include "vimc-common.h"
 
 #define VIMC_CAP_DRV_NAME "vimc-capture"
@@ -418,7 +419,7 @@ static int vimc_cap_comp_bind(struct device *comp, struct device *master,
 	}
 
 	/* Initialize the media entity */
-	vcap->vdev.entity.name = pdata->entity_name;
+	vcap->vdev.entity.name = pdata->name;
 	vcap->vdev.entity.function = MEDIA_ENT_F_IO_V4L;
 	ret = media_entity_pads_init(&vcap->vdev.entity,
 				     1, vcap->ved.pads);
@@ -443,7 +444,7 @@ static int vimc_cap_comp_bind(struct device *comp, struct device *master,
 	ret = vb2_queue_init(q);
 	if (ret) {
 		dev_err(comp, "%s: vb2 queue init failed (err=%d)\n",
-			pdata->entity_name, ret);
+			pdata->name, ret);
 		goto err_clean_m_ent;
 	}
 
@@ -476,7 +477,7 @@ static int vimc_cap_comp_bind(struct device *comp, struct device *master,
 	vdev->queue = q;
 	vdev->v4l2_dev = v4l2_dev;
 	vdev->vfl_dir = VFL_DIR_RX;
-	strscpy(vdev->name, pdata->entity_name, sizeof(vdev->name));
+	strscpy(vdev->name, pdata->name, sizeof(vdev->name));
 	video_set_drvdata(vdev, &vcap->ved);
 
 	/* Register the video_device with the v4l2 and the media framework */
@@ -534,7 +535,44 @@ static struct platform_driver vimc_cap_pdrv = {
 	},
 };
 
-module_platform_driver(vimc_cap_pdrv);
+static struct config_item_type vimc_cfs_dpad_type = {
+	.ct_owner	= THIS_MODULE,
+};
+
+static struct config_group vimc_cap_cfs_sink_pad_group;
+
+static void vimc_cap_configfs_cb(struct config_group *group)
+{
+	config_group_init_type_name(&vimc_cap_cfs_sink_pad_group,
+				    VIMC_CFS_SINK_PAD_NAME(0),
+				    &vimc_cfs_dpad_type);
+	configfs_add_default_group(&vimc_cap_cfs_sink_pad_group, group);
+}
+
+struct vimc_cfs_drv vimc_cap_cfs_drv = {
+	.name = VIMC_CAP_DRV_NAME,
+	.configfs_cb = vimc_cap_configfs_cb,
+};
+
+static int __init vimc_cap_init(void)
+{
+	int ret = platform_driver_register(&vimc_cap_pdrv);
+
+	if (ret)
+		return ret;
+
+	vimc_cfs_drv_register(&vimc_cap_cfs_drv);
+	return 0;
+}
+
+static void __exit vimc_cap_exit(void)
+{
+	platform_driver_unregister(&vimc_cap_pdrv);
+	vimc_cfs_drv_unregister(&vimc_cap_cfs_drv);
+}
+
+module_init(vimc_cap_init);
+module_exit(vimc_cap_exit);
 
 MODULE_DEVICE_TABLE(platform, vimc_cap_driver_ids);
 
