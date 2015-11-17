@@ -44,6 +44,7 @@
 #include <asm/unaligned.h>
 
 #include "nvme.h"
+#include "vdb.h"
 
 #define NVME_Q_DEPTH		1024
 #define NVME_AQ_DEPTH		256
@@ -99,6 +100,7 @@ struct nvme_dev {
 	dma_addr_t cmb_dma_addr;
 	u64 cmb_size;
 	u32 cmbsz;
+	struct nvme_vdb_dev vdb_d;
 	struct nvme_ctrl ctrl;
 	struct completion ioq_wait;
 };
@@ -131,6 +133,7 @@ struct nvme_queue {
 	u16 qid;
 	u8 cq_phase;
 	u8 cqe_seen;
+	struct nvme_vdb_queue vdb_q;
 };
 
 /*
@@ -171,6 +174,7 @@ static inline void _nvme_check_size(void)
 	BUILD_BUG_ON(sizeof(struct nvme_id_ns) != 4096);
 	BUILD_BUG_ON(sizeof(struct nvme_lba_range_type) != 64);
 	BUILD_BUG_ON(sizeof(struct nvme_smart_log) != 512);
+	BUILD_BUG_ON(sizeof(struct nvme_doorbell_memory) != 64);
 }
 
 /*
@@ -285,7 +289,7 @@ static void __nvme_submit_cmd(struct nvme_queue *nvmeq,
 
 	if (++tail == nvmeq->q_depth)
 		tail = 0;
-	writel(tail, nvmeq->q_db);
+	nvme_write_doorbell_sq(&nvmeq->vdb_q, tail, nvmeq->q_db);
 	nvmeq->sq_tail = tail;
 }
 
@@ -713,7 +717,8 @@ static void __nvme_process_cq(struct nvme_queue *nvmeq, unsigned int *tag)
 		return;
 
 	if (likely(nvmeq->cq_vector >= 0))
-		writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
+		nvme_write_doorbell_cq(&nvmeq->vdb_q, head,
+				       nvmeq->q_db + nvmeq->dev->db_stride);
 	nvmeq->cq_head = head;
 	nvmeq->cq_phase = phase;
 
@@ -1068,6 +1073,8 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 	dev->queues[qid] = nvmeq;
 	dev->queue_count++;
 
+	nvme_init_doorbell_mem(&dev->vdb_d, &nvmeq->vdb_q, qid, dev->db_stride);
+
 	return nvmeq;
 
  free_cqdma:
@@ -1098,6 +1105,7 @@ static void nvme_init_queue(struct nvme_queue *nvmeq, u16 qid)
 	nvmeq->cq_head = 0;
 	nvmeq->cq_phase = 1;
 	nvmeq->q_db = &dev->dbs[qid * 2 * dev->db_stride];
+	nvme_init_doorbell_mem(&dev->vdb_d, &nvmeq->vdb_q, qid, dev->db_stride);
 	memset((void *)nvmeq->cqes, 0, CQ_SIZE(nvmeq->q_depth));
 	dev->online_queues++;
 	spin_unlock_irq(&nvmeq->q_lock);
@@ -1588,6 +1596,9 @@ static int nvme_dev_add(struct nvme_dev *dev)
 		if (blk_mq_alloc_tag_set(&dev->tagset))
 			return 0;
 		dev->ctrl.tagset = &dev->tagset;
+
+		nvme_set_doorbell_memory(dev->dev, &dev->vdb_d,
+					 &dev->ctrl, dev->db_stride);
 	} else {
 		blk_mq_update_nr_hw_queues(&dev->tagset, dev->online_queues - 1);
 
@@ -1655,6 +1666,18 @@ static int nvme_pci_enable(struct nvme_dev *dev)
 
 	pci_enable_pcie_error_reporting(pdev);
 	pci_save_state(pdev);
+
+	/*
+	 * Google cloud support in memory doorbells extension, reducing the
+	 * number of MMIOs, optimizing performance for virtualized environments
+	 */
+	if (pdev->vendor == PCI_VENDOR_ID_GOOGLE) {
+		result = nvme_dma_alloc_doorbell_mem(dev->dev, &dev->vdb_d,
+						     dev->db_stride);
+		if (result)
+			goto disable;
+	}
+
 	return 0;
 
  disable:
@@ -1672,6 +1695,8 @@ static void nvme_dev_unmap(struct nvme_dev *dev)
 static void nvme_pci_disable(struct nvme_dev *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
+
+	nvme_dma_free_doorbell_mem(dev->dev, &dev->vdb_d, dev->db_stride);
 
 	if (pdev->msi_enabled)
 		pci_disable_msi(pdev);

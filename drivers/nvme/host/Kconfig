@@ -43,3 +43,14 @@ config NVME_RDMA
 	  from https://github.com/linux-nvme/nvme-cli.
 
 	  If unsure, say N.
+
+config NVME_VDB
+	bool "NVMe Virtual Doorbell Extension for Improved Virtualization"
+	depends on NVME_CORE
+	---help---
+	  This provides support for the Virtual Doorbell Extension which
+	  reduces the number of required MMIOs to ring doorbells, improving
+	  performance in virtualized environments where MMIO causes a high
+	  overhead.
+
+	  If unsure, say N.

@@ -562,6 +562,9 @@ enum nvme_admin_opcode {
 	nvme_admin_format_nvm		= 0x80,
 	nvme_admin_security_send	= 0x81,
 	nvme_admin_security_recv	= 0x82,
+#ifdef CONFIG_NVME_VDB
+	nvme_admin_doorbell_memory	= 0xC0,
+#endif
 };
 
 enum {
@@ -827,6 +830,16 @@ struct nvmf_property_get_command {
 	__u8		resv4[16];
 };
 
+struct nvme_doorbell_memory {
+	__u8			opcode;
+	__u8			flags;
+	__u16			command_id;
+	__u32			rsvd1[5];
+	__le64			prp1;
+	__le64			prp2;
+	__u32			rsvd12[6];
+};
+
 struct nvme_command {
 	union {
 		struct nvme_common_command common;
@@ -845,6 +858,7 @@ struct nvme_command {
 		struct nvmf_connect_command connect;
 		struct nvmf_property_set_command prop_set;
 		struct nvmf_property_get_command prop_get;
+		struct nvme_doorbell_memory doorbell_memory;
 	};
 };
 
@@ -934,6 +948,9 @@ enum {
 	/*
 	 * Media and Data Integrity Errors:
 	 */
+#ifdef CONFIG_NVME_VDB
+	NVME_SC_DOORBELL_MEMORY_INVALID	= 0x1C0,
+#endif
 	NVME_SC_WRITE_FAULT		= 0x280,
 	NVME_SC_READ_ERROR		= 0x281,
 	NVME_SC_GUARD_CHECK		= 0x282,
