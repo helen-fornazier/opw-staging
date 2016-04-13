@@ -2101,7 +2101,7 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 
 static int nvme_dev_map(struct nvme_dev *dev)
 {
-	int bars, result;
+	int bars, result = -ENODEV;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
 	bars = pci_select_bars(pdev, IORESOURCE_MEM);
@@ -2112,7 +2112,6 @@ static int nvme_dev_map(struct nvme_dev *dev)
 
 	dev->bar = ioremap(pci_resource_start(pdev, 0), 8192);
 	if (!dev->bar)
-		result = -ENODEV;
 		goto release;
 
 #ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
