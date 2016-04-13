@@ -2129,9 +2129,11 @@ static int nvme_dev_map(struct nvme_dev *dev)
 			goto dma_free;
 		}
 	}
+#endif
 
 	return 0;
 
+#ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
   dma_free:
 	dma_free_coherent(&pdev->dev, nvme_vendor_memory_size(dev), dev->db_mem, dev->doorbell);
 	dev->db_mem = 0;
