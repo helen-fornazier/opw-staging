@@ -1870,6 +1870,7 @@ static int nvme_pci_enable(struct nvme_dev *dev)
 static void nvme_dev_unmap(struct nvme_dev *dev)
 {
 #ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	int mem_size = nvme_vendor_memory_size(dev);
 
 	if (dev->db_mem)
@@ -2100,7 +2101,7 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 
 static int nvme_dev_map(struct nvme_dev *dev)
 {
-	int bars;
+	int bars, result;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
 	bars = pci_select_bars(pdev, IORESOURCE_MEM);
@@ -2111,10 +2112,11 @@ static int nvme_dev_map(struct nvme_dev *dev)
 
 	dev->bar = ioremap(pci_resource_start(pdev, 0), 8192);
 	if (!dev->bar)
+		result = -ENODEV;
 		goto release;
 
 #ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
-	if (pdev->vendor == PCI_VENDOR_ID_GOOGLE asdf) {
+	if (pdev->vendor == PCI_VENDOR_ID_GOOGLE) {
 		int mem_size = nvme_vendor_memory_size(dev);
 		dev->db_mem = dma_alloc_coherent(&pdev->dev, mem_size, &dev->doorbell, GFP_KERNEL);
 		if (!dev->db_mem) {
@@ -2133,12 +2135,11 @@ static int nvme_dev_map(struct nvme_dev *dev)
   dma_free:
 	dma_free_coherent(&pdev->dev, nvme_vendor_memory_size(dev), dev->db_mem, dev->doorbell);
 	dev->db_mem = 0;
-       return 0;
 #endif
 
   release:
        pci_release_regions(pdev);
-       return -ENODEV;
+       return result;
 }
 
 static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
