@@ -387,6 +387,9 @@ enum nvme_admin_opcode {
 	nvme_admin_format_nvm		= 0x80,
 	nvme_admin_security_send	= 0x81,
 	nvme_admin_security_recv	= 0x82,
+#ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
+	nvme_admin_doorbell_memory	= 0xC0,
+#endif
 };
 
 enum {
@@ -516,6 +519,18 @@ struct nvme_format_cmd {
 	__u32			rsvd11[5];
 };
 
+#ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
+struct nvme_doorbell_memory {
+	__u8			opcode;
+	__u8			flags;
+	__u16			command_id;
+	__u32			rsvd1[5];
+	__le64			prp1;
+	__le64			prp2;
+	__u32			rsvd12[6];
+};
+#endif
+
 struct nvme_command {
 	union {
 		struct nvme_common_command common;
@@ -529,6 +544,9 @@ struct nvme_command {
 		struct nvme_format_cmd format;
 		struct nvme_dsm_cmd dsm;
 		struct nvme_abort_cmd abort;
+#ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
+		struct nvme_doorbell_memory doorbell_memory;
+#endif
 	};
 };
 
@@ -575,6 +593,9 @@ enum {
 	NVME_SC_BAD_ATTRIBUTES		= 0x180,
 	NVME_SC_INVALID_PI		= 0x181,
 	NVME_SC_READ_ONLY		= 0x182,
+#ifdef CONFIG_NVME_VENDOR_EXT_GOOGLE
+	NVME_SC_DOORBELL_MEMORY_INVALID	= 0x1C0,
+#endif
 	NVME_SC_WRITE_FAULT		= 0x280,
 	NVME_SC_READ_ERROR		= 0x281,
 	NVME_SC_GUARD_CHECK		= 0x282,
