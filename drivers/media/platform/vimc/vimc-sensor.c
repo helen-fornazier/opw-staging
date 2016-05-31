@@ -36,6 +36,16 @@ struct vimc_sen_device {
 	int frame_size;
 };
 
+static const struct v4l2_mbus_framefmt fmt_default = {
+	.width = 640,
+	.height = 480,
+	.code = MEDIA_BUS_FMT_RGB888_1X24,
+	.field = V4L2_FIELD_NONE,
+	.colorspace = V4L2_COLORSPACE_SRGB,
+	.quantization = V4L2_QUANTIZATION_FULL_RANGE,
+	.xfer_func = V4L2_XFER_FUNC_SRGB,
+};
+
 static int vimc_sen_enum_mbus_code(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_pad_config *cfg,
 				   struct v4l2_subdev_mbus_code_enum *code)
@@ -81,11 +91,14 @@ static int vimc_sen_enum_frame_size(struct v4l2_subdev *sd,
 
 static int vimc_sen_get_fmt(struct v4l2_subdev *sd,
 			    struct v4l2_subdev_pad_config *cfg,
-			    struct v4l2_subdev_format *format)
+			    struct v4l2_subdev_format *fmt)
 {
 	struct vimc_sen_device *vsen = v4l2_get_subdevdata(sd);
 
-	format->format = vsen->mbus_format;
+	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
+		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+	else
+		fmt->format = vsen->mbus_format;
 
 	return 0;
 }
@@ -112,12 +125,53 @@ static void vimc_sen_tpg_s_format(struct vimc_sen_device *vsen)
 	tpg_s_xfer_func(&vsen->tpg, vsen->mbus_format.xfer_func);
 }
 
+static void vimc_sen_adjust_fmt(struct v4l2_mbus_framefmt *fmt)
+{
+	const struct vimc_pix_map *vpix;
+	struct v4l2_mbus_framefmt mf = fmt_default;
+
+	/* Only accept code in the pix map table */
+	vpix = vimc_pix_map_by_code(fmt->code);
+	if (vpix)
+		mf.code = fmt->code;
+
+	mf.width = clamp_t(u32, fmt->width, MIN_WIDTH, MAX_WIDTH);
+	mf.height = clamp_t(u32, fmt->height, MIN_HEIGHT, MAX_HEIGHT);
+
+	*fmt = mf;
+}
+
+static int vimc_sen_set_fmt(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_pad_config *cfg,
+			    struct v4l2_subdev_format *fmt)
+{
+	struct vimc_sen_device *vsen = v4l2_get_subdevdata(sd);
+
+	vimc_sen_adjust_fmt(&fmt->format);
+
+	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+		struct v4l2_mbus_framefmt *mf;
+
+		mf = v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
+		*mf = fmt->format;
+		return 0;
+	}
+
+	/* Do not change the format while stream is on */
+	if (vsen->frame)
+		return -EBUSY;
+
+	/* Set the new format */
+	vsen->mbus_format = fmt->format;
+
+	return 0;
+}
+
 static const struct v4l2_subdev_pad_ops vimc_sen_pad_ops = {
 	.enum_mbus_code		= vimc_sen_enum_mbus_code,
 	.enum_frame_size	= vimc_sen_enum_frame_size,
 	.get_fmt		= vimc_sen_get_fmt,
-	/* TODO: Add support to other formats */
-	.set_fmt		= vimc_sen_get_fmt,
+	.set_fmt		= vimc_sen_set_fmt,
 };
 
 static int vimc_thread_sen(void *data)
@@ -243,14 +297,8 @@ struct vimc_ent_device *vimc_sen_create(struct v4l2_device *v4l2_dev,
 
 	vsen = container_of(vsd, struct vimc_sen_device, vsd);
 
-	/* Set the active frame format (this is hardcoded for now) */
-	vsen->mbus_format.width = 640;
-	vsen->mbus_format.height = 480;
-	vsen->mbus_format.code = MEDIA_BUS_FMT_RGB888_1X24;
-	vsen->mbus_format.field = V4L2_FIELD_NONE;
-	vsen->mbus_format.colorspace = V4L2_COLORSPACE_SRGB;
-	vsen->mbus_format.quantization = V4L2_QUANTIZATION_FULL_RANGE;
-	vsen->mbus_format.xfer_func = V4L2_XFER_FUNC_SRGB;
+	/* Initialize the frame format */
+	vsen->mbus_format = fmt_default;
 
 	/* Initialize the test pattern generator */
 	tpg_init(&vsen->tpg, vsen->mbus_format.width,
