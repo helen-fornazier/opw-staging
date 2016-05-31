@@ -92,12 +92,61 @@ static int vimc_cap_s_input(struct file *file, void *priv, unsigned int i)
 	return i ? -EINVAL : 0;
 }
 
-static int vimc_cap_fmt_vid_cap(struct file *file, void *priv,
+static int vimc_cap_g_fmt_vid_cap(struct file *file, void *priv,
 				  struct v4l2_format *f)
 {
 	struct vimc_cap_device *vcap = video_drvdata(file);
 
 	f->fmt.pix = vcap->format;
+
+	return 0;
+}
+
+static int vimc_cap_try_fmt_vid_cap(struct file *file, void *priv,
+				    struct v4l2_format *f)
+{
+	struct vimc_cap_device *vcap = video_drvdata(file);
+	const struct v4l2_pix_format *active = &vcap->format;
+	struct v4l2_pix_format *format = &f->fmt.pix;
+	const struct vimc_pix_map *vpix;
+
+	format->width = clamp_t(u32, format->width, MIN_WIDTH, MAX_WIDTH);
+	format->height = clamp_t(u32, format->height, MIN_HEIGHT, MAX_HEIGHT);
+
+	/* Don't accept a pixelformat that is not on the table */
+	vpix = vimc_pix_map_by_pixelformat(format->pixelformat);
+	if (!vpix) {
+		format->pixelformat = active->pixelformat;
+		vpix = vimc_pix_map_by_pixelformat(format->pixelformat);
+	}
+
+	/* TODO: Add support for custom bytesperline values */
+	format->bytesperline = format->width * vpix->bpp;
+	format->sizeimage = format->bytesperline * format->height;
+
+	/* We don't support changing the colorspace for now */
+	/* TODO: add support for others colorspaces */
+	format->colorspace = active->colorspace;
+	format->ycbcr_enc = active->ycbcr_enc;
+	format->quantization = active->quantization;
+	format->xfer_func = active->xfer_func;
+	if (format->field == V4L2_FIELD_ANY)
+		format->field = active->field;
+
+	return 0;
+}
+
+static int vimc_cap_s_fmt_vid_cap(struct file *file, void *priv,
+				  struct v4l2_format *f)
+{
+	struct vimc_cap_device *vcap = video_drvdata(file);
+
+	/* Do not change the format while stream is on */
+	if (vb2_is_busy(&vcap->queue))
+		return -EBUSY;
+
+	vimc_cap_try_fmt_vid_cap(file, priv, f);
+	vcap->format = f->fmt.pix;
 
 	return 0;
 }
@@ -110,7 +159,7 @@ static int vimc_cap_enum_fmt_vid_cap(struct file *file, void *priv,
 	if (f->index > 0)
 		return -EINVAL;
 
-	/* We only support one format for now */
+	/* TODO: list formats here */
 	f->pixelformat = vcap->format.pixelformat;
 
 	return 0;
@@ -133,9 +182,9 @@ static const struct v4l2_ioctl_ops vimc_cap_ioctl_ops = {
 	.vidioc_g_input = vimc_cap_g_input,
 	.vidioc_s_input = vimc_cap_s_input,
 
-	.vidioc_g_fmt_vid_cap = vimc_cap_fmt_vid_cap,
-	.vidioc_s_fmt_vid_cap = vimc_cap_fmt_vid_cap,
-	.vidioc_try_fmt_vid_cap = vimc_cap_fmt_vid_cap,
+	.vidioc_g_fmt_vid_cap = vimc_cap_g_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap = vimc_cap_s_fmt_vid_cap,
+	.vidioc_try_fmt_vid_cap = vimc_cap_try_fmt_vid_cap,
 	.vidioc_enum_fmt_vid_cap = vimc_cap_enum_fmt_vid_cap,
 
 	.vidioc_reqbufs = vb2_ioctl_reqbufs,
