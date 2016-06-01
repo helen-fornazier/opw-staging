@@ -42,11 +42,15 @@ static int vimc_sen_enum_mbus_code(struct v4l2_subdev *sd,
 {
 	struct vimc_sen_device *vsen = v4l2_get_subdevdata(sd);
 
-	/* Check if it is a valid pad */
-	if (code->pad >= vsen->vsd.sd.entity.num_pads)
+	/* Check if it's the end of enumeration or if it is a valid pad
+	 * The last element of the pix map has all values equal to zero
+	 * and the bytes per pixel is never zero in a valid entry
+	 */
+	if (!vimc_pix_map_list[code->index].bpp ||
+	    code->pad >= vsen->vsd.sd.entity.num_pads)
 		return -EINVAL;
 
-	code->code = vsen->mbus_format.code;
+	code->code = vimc_pix_map_list[code->index].code;
 
 	return 0;
 }
@@ -56,23 +60,21 @@ static int vimc_sen_enum_frame_size(struct v4l2_subdev *sd,
 				    struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct vimc_sen_device *vsen = v4l2_get_subdevdata(sd);
+	const struct vimc_pix_map *vpix;
 
 	/* Check if it is a valid pad */
 	if (fse->pad >= vsen->vsd.sd.entity.num_pads)
 		return -EINVAL;
 
-	/* TODO: Add support to other formats */
-	if (fse->index)
+	/* Only accept code in the pix map table */
+	vpix = vimc_pix_map_by_code(fse->code);
+	if (!vpix)
 		return -EINVAL;
 
-	/* TODO: Add support for other codes */
-	if (fse->code != vsen->mbus_format.code)
-		return -EINVAL;
-
-	fse->min_width = vsen->mbus_format.width;
-	fse->max_width = vsen->mbus_format.width;
-	fse->min_height = vsen->mbus_format.height;
-	fse->max_height = vsen->mbus_format.height;
+	fse->min_width = MIN_WIDTH;
+	fse->max_width = MAX_WIDTH;
+	fse->min_height = MIN_HEIGHT;
+	fse->max_height = MAX_HEIGHT;
 
 	return 0;
 }

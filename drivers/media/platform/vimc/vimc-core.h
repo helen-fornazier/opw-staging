@@ -21,6 +21,12 @@
 #include <linux/slab.h>
 #include <media/v4l2-device.h>
 
+#define MAX_WIDTH  4096
+#define MAX_HEIGHT 2160
+#define MIN_WIDTH  16
+#define MIN_HEIGHT 16
+#define MAX_ZOOM   4
+
 /* Struct which matches the MEDIA_BUS_FMT_ codes with the corresponding
  * V4L2_PIX_FMT_ fourcc pixelformat and its bytes per pixel (bpp)
  */
