@@ -46,6 +46,7 @@
 #include <linux/sed-opal.h>
 
 #include "nvme.h"
+#include "dbbuf.h"
 
 #define NVME_Q_DEPTH		1024
 #define NVME_AQ_DEPTH		256
@@ -103,6 +104,7 @@ struct nvme_dev {
 	u32 cmbloc;
 	struct nvme_ctrl ctrl;
 	struct completion ioq_wait;
+	struct nvme_dbbuf_dev dbbuf_d;
 };
 
 static inline struct nvme_dev *to_nvme_dev(struct nvme_ctrl *ctrl)
@@ -133,6 +135,7 @@ struct nvme_queue {
 	u16 qid;
 	u8 cq_phase;
 	u8 cqe_seen;
+	struct nvme_dbbuf_queue dbbuf_q;
 };
 
 /*
@@ -174,6 +177,7 @@ static inline void _nvme_check_size(void)
 	BUILD_BUG_ON(sizeof(struct nvme_id_ns) != 4096);
 	BUILD_BUG_ON(sizeof(struct nvme_lba_range_type) != 64);
 	BUILD_BUG_ON(sizeof(struct nvme_smart_log) != 512);
+	BUILD_BUG_ON(sizeof(struct nvme_dbbuf) != 64);
 }
 
 /*
@@ -300,7 +304,7 @@ static void __nvme_submit_cmd(struct nvme_queue *nvmeq,
 
 	if (++tail == nvmeq->q_depth)
 		tail = 0;
-	writel(tail, nvmeq->q_db);
+	nvme_write_doorbell_sq(&nvmeq->dbbuf_q, tail, nvmeq->q_db);
 	nvmeq->sq_tail = tail;
 }
 
@@ -716,7 +720,8 @@ static void __nvme_process_cq(struct nvme_queue *nvmeq, unsigned int *tag)
 		return;
 
 	if (likely(nvmeq->cq_vector >= 0))
-		writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
+		nvme_write_doorbell_cq(&nvmeq->dbbuf_q, head,
+				       nvmeq->q_db + nvmeq->dev->db_stride);
 	nvmeq->cq_head = head;
 	nvmeq->cq_phase = phase;
 
@@ -1066,6 +1071,7 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 	nvmeq->q_depth = depth;
 	nvmeq->qid = qid;
 	nvmeq->cq_vector = -1;
+	nvme_init_dbbuf(&dev->dbbuf_d, &nvmeq->dbbuf_q, qid, dev->db_stride);
 	dev->queues[qid] = nvmeq;
 	dev->queue_count++;
 
@@ -1099,6 +1105,7 @@ static void nvme_init_queue(struct nvme_queue *nvmeq, u16 qid)
 	nvmeq->cq_phase = 1;
 	nvmeq->q_db = &dev->dbs[qid * 2 * dev->db_stride];
 	memset((void *)nvmeq->cqes, 0, CQ_SIZE(nvmeq->q_depth));
+	nvme_init_dbbuf(&dev->dbbuf_d, &nvmeq->dbbuf_q, qid, dev->db_stride);
 	dev->online_queues++;
 	spin_unlock_irq(&nvmeq->q_lock);
 }
@@ -1568,6 +1575,9 @@ static int nvme_dev_add(struct nvme_dev *dev)
 		if (blk_mq_alloc_tag_set(&dev->tagset))
 			return 0;
 		dev->ctrl.tagset = &dev->tagset;
+
+		nvme_set_dbbuf(dev->dev, &dev->dbbuf_d,
+			       &dev->ctrl, dev->db_stride);
 	} else {
 		blk_mq_update_nr_hw_queues(&dev->tagset, dev->online_queues - 1);
 
@@ -1700,6 +1710,7 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
 		nvme_disable_admin_queue(dev, shutdown);
 	}
 	nvme_pci_disable(dev);
+	nvme_dma_free_dbbuf(dev->dev, &dev->dbbuf_d, dev->db_stride);
 
 	blk_mq_tagset_busy_iter(&dev->tagset, nvme_cancel_request, &dev->ctrl);
 	blk_mq_tagset_busy_iter(&dev->admin_tagset, nvme_cancel_request, &dev->ctrl);
@@ -1798,6 +1809,13 @@ static void nvme_reset_work(struct work_struct *work)
 	} else {
 		free_opal_dev(dev->ctrl.opal_dev);
 		dev->ctrl.opal_dev = NULL;
+	}
+
+	if (dev->ctrl.oacs & NVME_CTRL_OACS_DBBUF_SUPP) {
+		result = nvme_dma_alloc_dbbuf(dev->dev, &dev->dbbuf_d,
+					      dev->db_stride);
+		if (result)
+			goto out;
 	}
 
 	result = nvme_setup_io_queues(dev);

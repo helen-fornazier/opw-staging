@@ -59,4 +59,13 @@ config NVME_FC
 	  To configure a NVMe over Fabrics controller use the nvme-cli tool
 	  from https://github.com/linux-nvme/nvme-cli.
 
+config NVME_DBBUF
+	bool "NVM Express Doorbell Buffer Config Command"
+	depends on NVME_CORE
+	---help---
+	  This provides support for the Doorbell Buffer Config Command, which
+	  reduces the number of required MMIOs to ring doorbells, improving
+	  performance for virtualised environments where MMIO causes a high
+	  overhead.
+
 	  If unsure, say N.

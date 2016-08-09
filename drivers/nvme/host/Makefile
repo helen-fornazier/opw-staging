@@ -9,6 +9,7 @@ nvme-core-$(CONFIG_BLK_DEV_NVME_SCSI)	+= scsi.o
 nvme-core-$(CONFIG_NVM)			+= lightnvm.o
 
 nvme-y					+= pci.o
+nvme-$(CONFIG_NVME_DBBUF)		+= dbbuf.o
 
 nvme-fabrics-y				+= fabrics.o
 
