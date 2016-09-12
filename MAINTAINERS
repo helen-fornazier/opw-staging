@@ -12548,6 +12548,14 @@ W:	https://linuxtv.org
 S:	Maintained
 F:	drivers/media/platform/vivid/*
 
+VIMC VIRTUAL MEDIA CONTROLLER DRIVER
+M:	Helen Koike <helen.koike@collabora.com>
+L:	linux-media@vger.kernel.org
+T:	git git://linuxtv.org/media_tree.git
+W:	https://linuxtv.org
+S:	Maintained
+F:	drivers/media/platform/vimc/*
+
 VLAN (802.1Q)
 M:	Patrick McHardy <kaber@trash.net>
 L:	netdev@vger.kernel.org
