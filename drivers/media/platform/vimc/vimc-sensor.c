@@ -29,6 +29,13 @@
 
 #define VIMC_SEN_DRV_NAME "vimc-sensor"
 
+static bool vsen_tpg;
+module_param(vsen_tpg, bool, 0000);
+MODULE_PARM_DESC(vsen_tpg, " generate image from sensor node\n"
+	"If set to false, then the pipe will be optimized and image will be "
+	"generated directly in the capture node instead of going through "
+	"the whole pipe");
+
 struct vimc_sen_device {
 	struct vimc_ent_device ved;
 	struct v4l2_subdev sd;
@@ -230,6 +237,13 @@ static int vimc_sen_s_stream(struct v4l2_subdev *sd, int enable)
 				container_of(sd, struct vimc_sen_device, sd);
 	int ret;
 
+	if (!vsen_tpg)
+		/*
+		 * If we are not generating the frames, then inform the caller
+		 * to generate the frame in shallow level of the pipe
+		 */
+		return VIMC_PIPE_OPT;
+
 	if (enable) {
 		const struct vimc_pix_map *vpix;
 		unsigned int frame_size;
@@ -299,7 +313,8 @@ static void vimc_sen_comp_unbind(struct device *comp, struct device *master,
 				container_of(ved, struct vimc_sen_device, ved);
 
 	vimc_ent_sd_unregister(ved, &vsen->sd);
-	tpg_free(&vsen->tpg);
+	if (vsen_tpg)
+		tpg_free(&vsen->tpg);
 	kfree(vsen);
 }
 
@@ -332,11 +347,13 @@ static int vimc_sen_comp_bind(struct device *comp, struct device *master,
 	vsen->mbus_format = fmt_default;
 
 	/* Initialize the test pattern generator */
-	tpg_init(&vsen->tpg, vsen->mbus_format.width,
-		 vsen->mbus_format.height);
-	ret = tpg_alloc(&vsen->tpg, VIMC_FRAME_MAX_WIDTH);
-	if (ret)
-		goto err_unregister_ent_sd;
+	if (vsen_tpg) {
+		tpg_init(&vsen->tpg, vsen->mbus_format.width,
+			 vsen->mbus_format.height);
+		ret = tpg_alloc(&vsen->tpg, VIMC_FRAME_MAX_WIDTH);
+		if (ret)
+			goto err_unregister_ent_sd;
+	}
 
 	return 0;
 
