@@ -15,7 +15,10 @@
  *
  */
 
+#include <linux/freezer.h>
+#include <linux/kthread.h>
 #include <media/v4l2-ioctl.h>
+#include <media/v4l2-tpg.h>
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-vmalloc.h>
 
@@ -38,6 +41,8 @@ struct vimc_cap_device {
 	struct mutex lock;
 	u32 sequence;
 	struct media_pipeline pipe;
+	struct tpg_data tpg;
+	struct task_struct *kthread_cap;
 };
 
 static const struct v4l2_pix_format fmt_default = {
@@ -239,6 +244,90 @@ static void vimc_cap_return_all_buffers(struct vimc_cap_device *vcap,
 	spin_unlock(&vcap->qlock);
 }
 
+static void vimc_cap_process_frame(struct vimc_ent_device *ved,
+				   struct media_pad *sink, const void *frame)
+{
+	struct vimc_cap_device *vcap = container_of(ved, struct vimc_cap_device,
+						    ved);
+	struct vimc_cap_buffer *vimc_buf;
+	void *vbuf;
+
+	spin_lock(&vcap->qlock);
+
+	/* Get the first entry of the list */
+	vimc_buf = list_first_entry_or_null(&vcap->buf_list,
+					    typeof(*vimc_buf), list);
+	if (!vimc_buf) {
+		spin_unlock(&vcap->qlock);
+		return;
+	}
+
+	/* Remove this entry from the list */
+	list_del(&vimc_buf->list);
+
+	spin_unlock(&vcap->qlock);
+
+	/* Fill the buffer */
+	vimc_buf->vb2.vb2_buf.timestamp = ktime_get_ns();
+	vimc_buf->vb2.sequence = vcap->sequence++;
+	vimc_buf->vb2.field = vcap->format.field;
+
+	vbuf = vb2_plane_vaddr(&vimc_buf->vb2.vb2_buf, 0);
+
+	if (sink)
+		memcpy(vbuf, frame, vcap->format.sizeimage);
+	else
+		tpg_fill_plane_buffer(&vcap->tpg, V4L2_STD_PAL, 0, vbuf);
+
+	/* Set it as ready */
+	vb2_set_plane_payload(&vimc_buf->vb2.vb2_buf, 0,
+			      vcap->format.sizeimage);
+	vb2_buffer_done(&vimc_buf->vb2.vb2_buf, VB2_BUF_STATE_DONE);
+}
+
+
+static int vimc_cap_tpg_thread(void *data)
+{
+	struct vimc_cap_device *vcap = data;
+
+	set_freezable();
+	set_current_state(TASK_UNINTERRUPTIBLE);
+
+	for (;;) {
+		try_to_freeze();
+		if (kthread_should_stop())
+			break;
+
+		vimc_cap_process_frame(&vcap->ved, NULL, NULL);
+
+		/* 60 frames per second */
+		schedule_timeout(HZ/60);
+	}
+
+	return 0;
+}
+
+static void vimc_cap_tpg_s_format(struct vimc_cap_device *vcap)
+{
+	const struct vimc_pix_map *vpix =
+			vimc_pix_map_by_pixelformat(vcap->format.pixelformat);
+
+	tpg_reset_source(&vcap->tpg, vcap->format.width, vcap->format.height,
+			 vcap->format.field);
+	tpg_s_bytesperline(&vcap->tpg, 0, vcap->format.width * vpix->bpp);
+	tpg_s_buf_height(&vcap->tpg, vcap->format.height);
+	tpg_s_fourcc(&vcap->tpg, vpix->pixelformat);
+	/* TODO: check why the tpg_s_field need this third argument if
+	 * it is already receiving the field
+	 */
+	tpg_s_field(&vcap->tpg, vcap->format.field,
+		    vcap->format.field == V4L2_FIELD_ALTERNATE);
+	tpg_s_colorspace(&vcap->tpg, vcap->format.colorspace);
+	tpg_s_ycbcr_enc(&vcap->tpg, vcap->format.ycbcr_enc);
+	tpg_s_quantization(&vcap->tpg, vcap->format.quantization);
+	tpg_s_xfer_func(&vcap->tpg, vcap->format.xfer_func);
+}
+
 static int vimc_cap_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 	struct vimc_cap_device *vcap = vb2_get_drv_priv(vq);
@@ -249,20 +338,43 @@ static int vimc_cap_start_streaming(struct vb2_queue *vq, unsigned int count)
 
 	/* Start the media pipeline */
 	ret = media_pipeline_start(entity, &vcap->pipe);
-	if (ret) {
-		vimc_cap_return_all_buffers(vcap, VB2_BUF_STATE_QUEUED);
-		return ret;
-	}
+	if (ret)
+		goto err_ret_all_buffs;
 
 	/* Enable streaming from the pipe */
 	ret = vimc_pipeline_s_stream(&vcap->vdev.entity, 1);
-	if (ret) {
-		media_pipeline_stop(entity);
-		vimc_cap_return_all_buffers(vcap, VB2_BUF_STATE_QUEUED);
-		return ret;
+	if (ret < 0)
+		goto err_mpipe_stop;
+
+	if (ret == VIMC_PIPE_OPT) {
+		tpg_init(&vcap->tpg, vcap->format.width, vcap->format.height);
+		ret = tpg_alloc(&vcap->tpg, VIMC_FRAME_MAX_WIDTH);
+		if (ret)
+			/* We don't need to call vimc_pipeline_s_stream(e, 0) */
+			goto err_mpipe_stop;
+
+		vimc_cap_tpg_s_format(vcap);
+		vcap->kthread_cap = kthread_run(vimc_cap_tpg_thread, vcap,
+					"%s-cap", vcap->vdev.v4l2_dev->name);
+		if (IS_ERR(vcap->kthread_cap)) {
+			dev_err(vcap->vdev.v4l2_dev->dev,
+				"%s: kernel_thread() failed\n",
+				vcap->vdev.name);
+			ret = PTR_ERR(vcap->kthread_cap);
+			goto err_tpg_free;
+		}
 	}
 
 	return 0;
+
+err_tpg_free:
+	tpg_free(&vcap->tpg);
+err_mpipe_stop:
+	media_pipeline_stop(entity);
+err_ret_all_buffs:
+	vimc_cap_return_all_buffers(vcap, VB2_BUF_STATE_QUEUED);
+
+	return ret;
 }
 
 /*
@@ -273,8 +385,15 @@ static void vimc_cap_stop_streaming(struct vb2_queue *vq)
 {
 	struct vimc_cap_device *vcap = vb2_get_drv_priv(vq);
 
-	/* Disable streaming from the pipe */
-	vimc_pipeline_s_stream(&vcap->vdev.entity, 0);
+	if (vcap->kthread_cap) {
+		/* Stop image generator */
+		kthread_stop(vcap->kthread_cap);
+		vcap->kthread_cap = NULL;
+		tpg_free(&vcap->tpg);
+	} else {
+		/* Disable streaming from the pipe */
+		vimc_pipeline_s_stream(&vcap->vdev.entity, 0);
+	}
 
 	/* Stop the media pipeline */
 	media_pipeline_stop(&vcap->vdev.entity);
@@ -428,44 +547,6 @@ static void vimc_cap_destroy(struct vimc_ent_device *ved)
 	video_unregister_device(&vcap->vdev);
 	vimc_pads_cleanup(vcap->ved.pads);
 	kfree(vcap);
-}
-
-static void vimc_cap_process_frame(struct vimc_ent_device *ved,
-				   struct media_pad *sink, const void *frame)
-{
-	struct vimc_cap_device *vcap = container_of(ved, struct vimc_cap_device,
-						    ved);
-	struct vimc_cap_buffer *vimc_buf;
-	void *vbuf;
-
-	spin_lock(&vcap->qlock);
-
-	/* Get the first entry of the list */
-	vimc_buf = list_first_entry_or_null(&vcap->buf_list,
-					    typeof(*vimc_buf), list);
-	if (!vimc_buf) {
-		spin_unlock(&vcap->qlock);
-		return;
-	}
-
-	/* Remove this entry from the list */
-	list_del(&vimc_buf->list);
-
-	spin_unlock(&vcap->qlock);
-
-	/* Fill the buffer */
-	vimc_buf->vb2.vb2_buf.timestamp = ktime_get_ns();
-	vimc_buf->vb2.sequence = vcap->sequence++;
-	vimc_buf->vb2.field = vcap->format.field;
-
-	vbuf = vb2_plane_vaddr(&vimc_buf->vb2.vb2_buf, 0);
-
-	memcpy(vbuf, frame, vcap->format.sizeimage);
-
-	/* Set it as ready */
-	vb2_set_plane_payload(&vimc_buf->vb2.vb2_buf, 0,
-			      vcap->format.sizeimage);
-	vb2_buffer_done(&vimc_buf->vb2.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
 struct vimc_ent_device *vimc_cap_create(struct v4l2_device *v4l2_dev,
