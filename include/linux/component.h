@@ -18,8 +18,6 @@ void component_del(struct device *, const struct component_ops *);
 int component_bind_all(struct device *master, void *master_data);
 void component_unbind_all(struct device *master, void *master_data);
 
-struct master;
-
 struct component_master_ops {
 	int (*bind)(struct device *master);
 	void (*unbind)(struct device *master);
