@@ -15,17 +15,16 @@
  *
  */
 
+#define DEBUG
+
+#include <linux/component.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <media/media-device.h>
 #include <media/v4l2-device.h>
 
-#include "vimc-capture.h"
-#include "vimc-core.h"
-#include "vimc-debayer.h"
-#include "vimc-scaler.h"
-#include "vimc-sensor.h"
+#include "vimc-common.h"
 
 #define VIMC_PDEV_NAME "vimc"
 #define VIMC_MDEV_MODEL_NAME "VIMC MDEV"
@@ -39,10 +38,10 @@
 }
 
 struct vimc_device {
-	/*
-	 * The pipeline configuration
-	 * (filled before calling vimc_device_register)
-	 */
+	/* The platform device */
+	struct platform_device pdev;
+
+	/* The pipeline configuration */
 	const struct vimc_pipeline_config *pipe_cfg;
 
 	/* The Associated media_device parent */
@@ -51,43 +50,14 @@ struct vimc_device {
 	/* Internal v4l2 parent device*/
 	struct v4l2_device v4l2_dev;
 
-	/* Internal topology */
-	struct vimc_ent_device **ved;
-};
-
-/**
- * enum vimc_ent_node - Select the functionality of a node in the topology
- * @VIMC_ENT_NODE_SENSOR:	A node of type SENSOR simulates a camera sensor
- *				generating internal images in bayer format and
- *				propagating those images through the pipeline
- * @VIMC_ENT_NODE_CAPTURE:	A node of type CAPTURE is a v4l2 video_device
- *				that exposes the received image from the
- *				pipeline to the user space
- * @VIMC_ENT_NODE_INPUT:	A node of type INPUT is a v4l2 video_device that
- *				receives images from the user space and
- *				propagates them through the pipeline
- * @VIMC_ENT_NODE_DEBAYER:	A node type DEBAYER expects to receive a frame
- *				in bayer format converts it to RGB
- * @VIMC_ENT_NODE_SCALER:	A node of type SCALER scales the received image
- *				by a given multiplier
- *
- * This enum is used in the entity configuration struct to allow the definition
- * of a custom topology specifying the role of each node on it.
- */
-enum vimc_ent_node {
-	VIMC_ENT_NODE_SENSOR,
-	VIMC_ENT_NODE_CAPTURE,
-	VIMC_ENT_NODE_INPUT,
-	VIMC_ENT_NODE_DEBAYER,
-	VIMC_ENT_NODE_SCALER,
+	/* Subdevices */
+	struct platform_device **subdevs;
 };
 
 /* Structure which describes individual configuration for each entity */
 struct vimc_ent_config {
 	const char *name;
-	size_t pads_qty;
-	const unsigned long *pads_flag;
-	enum vimc_ent_node node;
+	const char *drv;
 };
 
 /* Structure which describes links between entities */
@@ -114,60 +84,40 @@ struct vimc_pipeline_config {
 static const struct vimc_ent_config ent_config[] = {
 	{
 		.name = "Sensor A",
-		.pads_qty = 1,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SOURCE},
-		.node = VIMC_ENT_NODE_SENSOR,
+		.drv = "vimc-sensor",
 	},
 	{
 		.name = "Sensor B",
-		.pads_qty = 1,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SOURCE},
-		.node = VIMC_ENT_NODE_SENSOR,
+		.drv = "vimc-sensor",
 	},
 	{
 		.name = "Debayer A",
-		.pads_qty = 2,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SINK,
-						     MEDIA_PAD_FL_SOURCE},
-		.node = VIMC_ENT_NODE_DEBAYER,
+		.drv = "vimc-debayer",
 	},
 	{
 		.name = "Debayer B",
-		.pads_qty = 2,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SINK,
-						     MEDIA_PAD_FL_SOURCE},
-		.node = VIMC_ENT_NODE_DEBAYER,
+		.drv = "vimc-debayer",
 	},
 	{
 		.name = "Raw Capture 0",
-		.pads_qty = 1,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SINK},
-		.node = VIMC_ENT_NODE_CAPTURE,
+		.drv = "vimc-capture",
 	},
 	{
 		.name = "Raw Capture 1",
-		.pads_qty = 1,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SINK},
-		.node = VIMC_ENT_NODE_CAPTURE,
+		.drv = "vimc-capture",
 	},
 	{
 		.name = "RGB/YUV Input",
-		.pads_qty = 1,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SOURCE},
-		.node = VIMC_ENT_NODE_INPUT,
+		/* TODO: fixe me */
+		.drv = "vimc-scaler",
 	},
 	{
 		.name = "Scaler",
-		.pads_qty = 2,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SINK,
-						     MEDIA_PAD_FL_SOURCE},
-		.node = VIMC_ENT_NODE_SCALER,
+		.drv = "vimc-scaler",
 	},
 	{
 		.name = "RGB/YUV Capture",
-		.pads_qty = 1,
-		.pads_flag = (const unsigned long[]){MEDIA_PAD_FL_SINK},
-		.node = VIMC_ENT_NODE_CAPTURE,
+		.drv = "vimc-capture",
 	},
 };
 
@@ -199,447 +149,38 @@ static const struct vimc_pipeline_config pipe_cfg = {
 
 /* -------------------------------------------------------------------------- */
 
-/*
- * NOTE: non-bayer formats need to come first (necessary for enum_mbus_code
- * in the scaler)
- */
-static const struct vimc_pix_map vimc_pix_map_list[] = {
-	/* TODO: add all missing formats */
-
-	/* RGB formats */
-	{
-		.code = MEDIA_BUS_FMT_BGR888_1X24,
-		.pixelformat = V4L2_PIX_FMT_BGR24,
-		.bpp = 3,
-		.bayer = false,
-	},
-	{
-		.code = MEDIA_BUS_FMT_RGB888_1X24,
-		.pixelformat = V4L2_PIX_FMT_RGB24,
-		.bpp = 3,
-		.bayer = false,
-	},
-	{
-		.code = MEDIA_BUS_FMT_ARGB8888_1X32,
-		.pixelformat = V4L2_PIX_FMT_ARGB32,
-		.bpp = 4,
-		.bayer = false,
-	},
-
-	/* Bayer formats */
-	{
-		.code = MEDIA_BUS_FMT_SBGGR8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SBGGR8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGBRG8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SGBRG8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGRBG8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SGRBG8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SRGGB8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SRGGB8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SBGGR10_1X10,
-		.pixelformat = V4L2_PIX_FMT_SBGGR10,
-		.bpp = 2,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGBRG10_1X10,
-		.pixelformat = V4L2_PIX_FMT_SGBRG10,
-		.bpp = 2,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGRBG10_1X10,
-		.pixelformat = V4L2_PIX_FMT_SGRBG10,
-		.bpp = 2,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SRGGB10_1X10,
-		.pixelformat = V4L2_PIX_FMT_SRGGB10,
-		.bpp = 2,
-		.bayer = true,
-	},
-
-	/* 10bit raw bayer a-law compressed to 8 bits */
-	{
-		.code = MEDIA_BUS_FMT_SBGGR10_ALAW8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SBGGR10ALAW8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGBRG10_ALAW8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SGBRG10ALAW8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGRBG10_ALAW8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SGRBG10ALAW8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SRGGB10_ALAW8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SRGGB10ALAW8,
-		.bpp = 1,
-		.bayer = true,
-	},
-
-	/* 10bit raw bayer DPCM compressed to 8 bits */
-	{
-		.code = MEDIA_BUS_FMT_SBGGR10_DPCM8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SBGGR10DPCM8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGBRG10_DPCM8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SGBRG10DPCM8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGRBG10_DPCM8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SGRBG10DPCM8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SRGGB10_DPCM8_1X8,
-		.pixelformat = V4L2_PIX_FMT_SRGGB10DPCM8,
-		.bpp = 1,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SBGGR12_1X12,
-		.pixelformat = V4L2_PIX_FMT_SBGGR12,
-		.bpp = 2,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGBRG12_1X12,
-		.pixelformat = V4L2_PIX_FMT_SGBRG12,
-		.bpp = 2,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SGRBG12_1X12,
-		.pixelformat = V4L2_PIX_FMT_SGRBG12,
-		.bpp = 2,
-		.bayer = true,
-	},
-	{
-		.code = MEDIA_BUS_FMT_SRGGB12_1X12,
-		.pixelformat = V4L2_PIX_FMT_SRGGB12,
-		.bpp = 2,
-		.bayer = true,
-	},
-};
-
-const struct vimc_pix_map *vimc_pix_map_by_index(unsigned int i)
-{
-	if (i >= ARRAY_SIZE(vimc_pix_map_list))
-		return NULL;
-
-	return &vimc_pix_map_list[i];
-}
-
-const struct vimc_pix_map *vimc_pix_map_by_code(u32 code)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(vimc_pix_map_list); i++) {
-		if (vimc_pix_map_list[i].code == code)
-			return &vimc_pix_map_list[i];
-	}
-	return NULL;
-}
-
-const struct vimc_pix_map *vimc_pix_map_by_pixelformat(u32 pixelformat)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(vimc_pix_map_list); i++) {
-		if (vimc_pix_map_list[i].pixelformat == pixelformat)
-			return &vimc_pix_map_list[i];
-	}
-	return NULL;
-}
-
-int vimc_propagate_frame(struct media_pad *src, const void *frame)
-{
-	struct media_link *link;
-
-	if (!(src->flags & MEDIA_PAD_FL_SOURCE))
-		return -EINVAL;
-
-	/* Send this frame to all sink pads that are direct linked */
-	list_for_each_entry(link, &src->entity->links, list) {
-		if (link->source == src &&
-		    (link->flags & MEDIA_LNK_FL_ENABLED)) {
-			struct vimc_ent_device *ved = NULL;
-			struct media_entity *entity = link->sink->entity;
-
-			if (is_media_entity_v4l2_subdev(entity)) {
-				struct v4l2_subdev *sd =
-					container_of(entity, struct v4l2_subdev,
-						     entity);
-				ved = v4l2_get_subdevdata(sd);
-			} else if (is_media_entity_v4l2_video_device(entity)) {
-				struct video_device *vdev =
-					container_of(entity,
-						     struct video_device,
-						     entity);
-				ved = video_get_drvdata(vdev);
-			}
-			if (ved && ved->process_frame)
-				ved->process_frame(ved, link->sink, frame);
-		}
-	}
-
-	return 0;
-}
-
-static void vimc_device_unregister(struct vimc_device *vimc)
-{
-	unsigned int i;
-
-	media_device_unregister(&vimc->mdev);
-	/* Cleanup (only initialized) entities */
-	for (i = 0; i < vimc->pipe_cfg->num_ents; i++) {
-		if (vimc->ved[i] && vimc->ved[i]->destroy)
-			vimc->ved[i]->destroy(vimc->ved[i]);
-
-		vimc->ved[i] = NULL;
-	}
-	v4l2_device_unregister(&vimc->v4l2_dev);
-	media_device_cleanup(&vimc->mdev);
-}
-
-int vimc_pipeline_s_stream(struct media_entity *ent, int enable)
-{
-	struct v4l2_subdev *sd;
-	struct media_pad *pad;
+static int vimc_create_links(struct vimc_device *vimc) {
 	unsigned int i;
 	int ret;
 
-	for (i = 0; i < ent->num_pads; i++) {
-		if (ent->pads[i].flags & MEDIA_PAD_FL_SOURCE)
-			continue;
-
-		/* Start the stream in the subdevice direct connected */
-		pad = media_entity_remote_pad(&ent->pads[i]);
-
+	/* Initialize the links between entities */
+	for (i = 0; i < vimc->pipe_cfg->num_links; i++) {
+		const struct vimc_ent_link *link = &vimc->pipe_cfg->links[i];
 		/*
-		 * if this is a raw node from vimc-core, then there is
-		 * nothing to activate
-		 * TODO: remove this when there are no more raw nodes in the
-		 * core and return error instead
+		 * TODO: Check another way of retrieving ved struct without
+		 * relying on platform_get_drvdata
 		 */
-		if (pad->entity->obj_type == MEDIA_ENTITY_TYPE_BASE)
-			continue;
+		struct vimc_ent_device *ved_src =
+			platform_get_drvdata(vimc->subdevs[link->src_ent]);
+		struct vimc_ent_device *ved_sink =
+			platform_get_drvdata(vimc->subdevs[link->sink_ent]);
 
-		sd = media_entity_to_v4l2_subdev(pad->entity);
-		ret = v4l2_subdev_call(sd, video, s_stream, enable);
-		if (ret && ret != -ENOIOCTLCMD)
+		ret = media_create_pad_link(ved_src->ent, link->src_pad,
+					    ved_sink->ent, link->sink_pad,
+					    link->flags);
+		if (ret)
 			return ret;
 	}
 
 	return 0;
 }
 
-/* Helper function to allocate and initialize pads */
-struct media_pad *vimc_pads_init(u16 num_pads, const unsigned long *pads_flag)
-{
-	struct media_pad *pads;
-	unsigned int i;
-
-	/* Allocate memory for the pads */
-	pads = kcalloc(num_pads, sizeof(*pads), GFP_KERNEL);
-	if (!pads)
-		return ERR_PTR(-ENOMEM);
-
-	/* Initialize the pads */
-	for (i = 0; i < num_pads; i++) {
-		pads[i].index = i;
-		pads[i].flags = pads_flag[i];
-	}
-
-	return pads;
-}
-
-static const struct media_entity_operations vimc_ent_sd_mops = {
-	.link_validate = v4l2_subdev_link_validate,
-};
-
-int vimc_ent_sd_register(struct vimc_ent_device *ved,
-			 struct v4l2_subdev *sd,
-			 struct v4l2_device *v4l2_dev,
-			 const char *const name,
-			 u32 function,
-			 u16 num_pads,
-			 const unsigned long *pads_flag,
-			 const struct v4l2_subdev_ops *sd_ops,
-			 void (*sd_destroy)(struct vimc_ent_device *))
-{
+static int vimc_comp_bind(struct device *master) {
+	struct vimc_device *vimc = container_of(to_platform_device(master),
+						struct vimc_device, pdev);
 	int ret;
 
-	/* Allocate the pads */
-	ved->pads = vimc_pads_init(num_pads, pads_flag);
-	if (IS_ERR(ved->pads))
-		return PTR_ERR(ved->pads);
-
-	/* Fill the vimc_ent_device struct */
-	ved->destroy = sd_destroy;
-	ved->ent = &sd->entity;
-
-	/* Initialize the subdev */
-	v4l2_subdev_init(sd, sd_ops);
-	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
-	sd->entity.ops = &vimc_ent_sd_mops;
-	sd->owner = THIS_MODULE;
-	strlcpy(sd->name, name, sizeof(sd->name));
-	v4l2_set_subdevdata(sd, ved);
-
-	/* Expose this subdev to user space */
-	sd->flags = V4L2_SUBDEV_FL_HAS_DEVNODE;
-
-	/* Initialize the media entity */
-	ret = media_entity_pads_init(&sd->entity, num_pads, ved->pads);
-	if (ret)
-		goto err_clean_pads;
-
-	/* Register the subdev with the v4l2 and the media framework */
-	ret = v4l2_device_register_subdev(v4l2_dev, sd);
-	if (ret) {
-		dev_err(v4l2_dev->dev,
-			"%s: subdev register failed (err=%d)\n",
-			name, ret);
-		goto err_clean_m_ent;
-	}
-
-	return 0;
-
-err_clean_m_ent:
-	media_entity_cleanup(&sd->entity);
-err_clean_pads:
-	vimc_pads_cleanup(ved->pads);
-	return ret;
-}
-
-void vimc_ent_sd_unregister(struct vimc_ent_device *ved, struct v4l2_subdev *sd)
-{
-	v4l2_device_unregister_subdev(sd);
-	media_entity_cleanup(ved->ent);
-	vimc_pads_cleanup(ved->pads);
-}
-
-/*
- * TODO: remove this function when all the
- * entities specific code are implemented
- */
-static void vimc_raw_destroy(struct vimc_ent_device *ved)
-{
-	media_device_unregister_entity(ved->ent);
-
-	media_entity_cleanup(ved->ent);
-
-	vimc_pads_cleanup(ved->pads);
-
-	kfree(ved->ent);
-
-	kfree(ved);
-}
-
-/*
- * TODO: remove this function when all the
- * entities specific code are implemented
- */
-static struct vimc_ent_device *vimc_raw_create(struct v4l2_device *v4l2_dev,
-					       const char *const name,
-					       u16 num_pads,
-					       const unsigned long *pads_flag)
-{
-	struct vimc_ent_device *ved;
-	int ret;
-
-	/* Allocate the main ved struct */
-	ved = kzalloc(sizeof(*ved), GFP_KERNEL);
-	if (!ved)
-		return ERR_PTR(-ENOMEM);
-
-	/* Allocate the media entity */
-	ved->ent = kzalloc(sizeof(*ved->ent), GFP_KERNEL);
-	if (!ved->ent) {
-		ret = -ENOMEM;
-		goto err_free_ved;
-	}
-
-	/* Allocate the pads */
-	ved->pads = vimc_pads_init(num_pads, pads_flag);
-	if (IS_ERR(ved->pads)) {
-		ret = PTR_ERR(ved->pads);
-		goto err_free_ent;
-	}
-
-	/* Initialize the media entity */
-	ved->ent->name = name;
-	ved->ent->function = MEDIA_ENT_F_V4L2_SUBDEV_UNKNOWN;
-	ret = media_entity_pads_init(ved->ent, num_pads, ved->pads);
-	if (ret)
-		goto err_cleanup_pads;
-
-	/* Register the media entity */
-	ret = media_device_register_entity(v4l2_dev->mdev, ved->ent);
-	if (ret)
-		goto err_cleanup_entity;
-
-	/* Fill out the destroy function and return */
-	ved->destroy = vimc_raw_destroy;
-	return ved;
-
-err_cleanup_entity:
-	media_entity_cleanup(ved->ent);
-err_cleanup_pads:
-	vimc_pads_cleanup(ved->pads);
-err_free_ent:
-	kfree(ved->ent);
-err_free_ved:
-	kfree(ved);
-
-	return ERR_PTR(ret);
-}
-
-static int vimc_device_register(struct vimc_device *vimc)
-{
-	unsigned int i;
-	int ret;
-
-	/* Allocate memory for the vimc_ent_devices pointers */
-	vimc->ved = devm_kcalloc(vimc->mdev.dev, vimc->pipe_cfg->num_ents,
-				 sizeof(*vimc->ved), GFP_KERNEL);
-	if (!vimc->ved)
-		return -ENOMEM;
-
-	/* Link the media device within the v4l2_device */
-	vimc->v4l2_dev.mdev = &vimc->mdev;
+	dev_dbg(master, "bind");
 
 	/* Register the v4l2 struct */
 	ret = v4l2_device_register(vimc->mdev.dev, &vimc->v4l2_dev);
@@ -649,72 +190,22 @@ static int vimc_device_register(struct vimc_device *vimc)
 		return ret;
 	}
 
-	/* Initialize entities */
-	for (i = 0; i < vimc->pipe_cfg->num_ents; i++) {
-		struct vimc_ent_device *(*create_func)(struct v4l2_device *,
-						       const char *const,
-						       u16,
-						       const unsigned long *);
+	/* Bind subdevices */
+	ret = component_bind_all(master, &vimc->v4l2_dev);
+	if (ret)
+		goto err_v4l2_unregister;
 
-		/* Register the specific node */
-		switch (vimc->pipe_cfg->ents[i].node) {
-		case VIMC_ENT_NODE_SENSOR:
-			create_func = vimc_sen_create;
-			break;
-
-		case VIMC_ENT_NODE_CAPTURE:
-			create_func = vimc_cap_create;
-			break;
-
-		case VIMC_ENT_NODE_DEBAYER:
-			create_func = vimc_deb_create;
-			break;
-
-		case VIMC_ENT_NODE_SCALER:
-			create_func = vimc_sca_create;
-			break;
-
-		/* TODO: Instantiate the specific topology node */
-		case VIMC_ENT_NODE_INPUT:
-		default:
-			/*
-			 * TODO: remove this when all the entities specific
-			 * code are implemented
-			 */
-			create_func = vimc_raw_create;
-			break;
-		}
-
-		vimc->ved[i] = create_func(&vimc->v4l2_dev,
-					   vimc->pipe_cfg->ents[i].name,
-					   vimc->pipe_cfg->ents[i].pads_qty,
-					   vimc->pipe_cfg->ents[i].pads_flag);
-		if (IS_ERR(vimc->ved[i])) {
-			ret = PTR_ERR(vimc->ved[i]);
-			vimc->ved[i] = NULL;
-			goto err;
-		}
-	}
-
-	/* Initialize the links between entities */
-	for (i = 0; i < vimc->pipe_cfg->num_links; i++) {
-		const struct vimc_ent_link *link = &vimc->pipe_cfg->links[i];
-
-		ret = media_create_pad_link(vimc->ved[link->src_ent]->ent,
-					    link->src_pad,
-					    vimc->ved[link->sink_ent]->ent,
-					    link->sink_pad,
-					    link->flags);
-		if (ret)
-			goto err;
-	}
+	/* Initialize links */
+	ret = vimc_create_links(vimc);
+	if (ret)
+		goto err_comp_unbind_all;
 
 	/* Register the media device */
 	ret = media_device_register(&vimc->mdev);
 	if (ret) {
 		dev_err(vimc->mdev.dev,
 			"media device register failed (err=%d)\n", ret);
-		return ret;
+		goto err_comp_unbind_all;
 	}
 
 	/* Expose all subdev's nodes*/
@@ -723,32 +214,103 @@ static int vimc_device_register(struct vimc_device *vimc)
 		dev_err(vimc->mdev.dev,
 			"vimc subdev nodes registration failed (err=%d)\n",
 			ret);
-		goto err;
+		goto err_mdev_unregister;
 	}
 
 	return 0;
 
-err:
-	/* Destroy the so far created topology */
-	vimc_device_unregister(vimc);
+err_mdev_unregister:
+	media_device_unregister(&vimc->mdev);
+err_comp_unbind_all:
+	component_unbind_all(master, NULL);
+err_v4l2_unregister:
+	v4l2_device_unregister(&vimc->v4l2_dev);
 
 	return ret;
 }
 
+static void vimc_comp_unbind(struct device *master) {
+	struct vimc_device *vimc = container_of(to_platform_device(master),
+						struct vimc_device, pdev);
+
+	dev_dbg(master, "unbind");
+
+	media_device_unregister(&vimc->mdev);
+	component_unbind_all(master, NULL);
+	v4l2_device_unregister(&vimc->v4l2_dev);
+}
+
+static int vimc_comp_compare(struct device *comp, void *data) {
+	const struct platform_device *pdev = to_platform_device(comp);
+	const char *name = data;
+
+	return !strcmp(pdev->dev.platform_data, name);
+}
+
+static struct component_match *vimc_add_subdevs(struct vimc_device *vimc) {
+	struct component_match *match = NULL;
+	unsigned int i;
+
+	for (i = 0; i < vimc->pipe_cfg->num_ents; i++) {
+		dev_dbg(&vimc->pdev.dev, "new pdev for %s\n",
+			vimc->pipe_cfg->ents[i].drv);
+
+		/*
+		 * TODO: check if using platform_data is indeed the best way to
+		 * pass the name to the driver or if we should add the drv name
+		 * in the platform_device_id table
+		 */
+		vimc->subdevs[i] = platform_device_register_data(&vimc->pdev.dev,
+				vimc->pipe_cfg->ents[i].drv,
+				PLATFORM_DEVID_AUTO,
+				vimc->pipe_cfg->ents[i].name,
+				strlen(vimc->pipe_cfg->ents[i].name) + 1);
+		if (!vimc->subdevs[i]) {
+			while(--i >= 0)
+				platform_device_unregister(vimc->subdevs[i]);
+
+			return ERR_PTR(-ENOMEM);
+		}
+
+		component_match_add(&vimc->pdev.dev, &match, vimc_comp_compare,
+				    (void*)vimc->pipe_cfg->ents[i].name);
+	}
+
+	return match;
+}
+
+static void vimc_rm_subdevs(struct vimc_device *vimc) {
+	unsigned int i;
+
+	for (i = 0; i < vimc->pipe_cfg->num_ents; i++)
+		platform_device_unregister(vimc->subdevs[i]);
+}
+
+static const struct component_master_ops vimc_comp_ops = {
+	.bind = vimc_comp_bind,
+	.unbind = vimc_comp_unbind,
+};
+
 static int vimc_probe(struct platform_device *pdev)
 {
-	struct vimc_device *vimc;
+	struct vimc_device *vimc = container_of(pdev, struct vimc_device, pdev);
+	struct component_match *match = NULL;
 	int ret;
 
-	/* Prepare the vimc topology structure */
+	dev_dbg(&pdev->dev, "probe");
 
-	/* Allocate memory for the vimc structure */
-	vimc = kzalloc(sizeof(*vimc), GFP_KERNEL);
-	if (!vimc)
+	/* Create platform_device for each entity in the topology*/
+	vimc->subdevs = devm_kcalloc(&vimc->pdev.dev, vimc->pipe_cfg->num_ents,
+				     sizeof(*vimc->subdevs), GFP_KERNEL);
+	if (!vimc->subdevs)
 		return -ENOMEM;
 
-	/* Set the pipeline configuration struct */
-	vimc->pipe_cfg = &pipe_cfg;
+	match = vimc_add_subdevs(vimc);
+	if (IS_ERR(match))
+		return PTR_ERR(match);
+
+	/* Link the media device within the v4l2_device */
+	vimc->v4l2_dev.mdev = &vimc->mdev;
 
 	/* Initialize media device */
 	strlcpy(vimc->mdev.model, VIMC_MDEV_MODEL_NAME,
@@ -756,28 +318,27 @@ static int vimc_probe(struct platform_device *pdev)
 	vimc->mdev.dev = &pdev->dev;
 	media_device_init(&vimc->mdev);
 
-	/* Create vimc topology */
-	ret = vimc_device_register(vimc);
+	/* Add self to the component system */
+	ret = component_master_add_with_match(&pdev->dev, &vimc_comp_ops,
+					      match);
 	if (ret) {
-		dev_err(vimc->mdev.dev,
-			"vimc device registration failed (err=%d)\n", ret);
+		media_device_cleanup(&vimc->mdev);
+		vimc_rm_subdevs(vimc);
 		kfree(vimc);
 		return ret;
 	}
-
-	/* Link the topology object with the platform device object */
-	platform_set_drvdata(pdev, vimc);
 
 	return 0;
 }
 
 static int vimc_remove(struct platform_device *pdev)
 {
-	struct vimc_device *vimc = platform_get_drvdata(pdev);
+	struct vimc_device *vimc = container_of(pdev, struct vimc_device, pdev);
 
-	/* Destroy all the topology */
-	vimc_device_unregister(vimc);
-	kfree(vimc);
+	dev_dbg(&pdev->dev, "remove");
+
+	component_master_del(&pdev->dev, &vimc_comp_ops);
+	vimc_rm_subdevs(vimc);
 
 	return 0;
 }
@@ -786,9 +347,12 @@ static void vimc_dev_release(struct device *dev)
 {
 }
 
-static struct platform_device vimc_pdev = {
-	.name		= VIMC_PDEV_NAME,
-	.dev.release	= vimc_dev_release,
+static struct vimc_device vimc_dev = {
+	.pipe_cfg = &pipe_cfg,
+	.pdev = {
+		.name = VIMC_PDEV_NAME,
+		.dev.release = vimc_dev_release,
+	}
 };
 
 static struct platform_driver vimc_pdrv = {
@@ -803,29 +367,29 @@ static int __init vimc_init(void)
 {
 	int ret;
 
-	ret = platform_device_register(&vimc_pdev);
+	ret = platform_device_register(&vimc_dev.pdev);
 	if (ret) {
-		dev_err(&vimc_pdev.dev,
+		dev_err(&vimc_dev.pdev.dev,
 			"platform device registration failed (err=%d)\n", ret);
 		return ret;
 	}
 
 	ret = platform_driver_register(&vimc_pdrv);
 	if (ret) {
-		dev_err(&vimc_pdev.dev,
+		dev_err(&vimc_dev.pdev.dev,
 			"platform driver registration failed (err=%d)\n", ret);
-
-		platform_device_unregister(&vimc_pdev);
+		platform_driver_unregister(&vimc_pdrv);
+		return ret;
 	}
 
-	return ret;
+	return 0;
 }
 
 static void __exit vimc_exit(void)
 {
 	platform_driver_unregister(&vimc_pdrv);
 
-	platform_device_unregister(&vimc_pdev);
+	platform_device_unregister(&vimc_dev.pdev);
 }
 
 module_init(vimc_init);

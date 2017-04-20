@@ -15,12 +15,16 @@
  *
  */
 
+#include <linux/component.h>
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/vmalloc.h>
 #include <linux/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
-#include "vimc-scaler.h"
+#include "vimc-common.h"
+
+#define VIMC_SCA_DRV_NAME "vimc-scaler"
 
 static unsigned int sca_mult = 3;
 module_param(sca_mult, uint, 0000);
@@ -33,6 +37,7 @@ MODULE_PARM_DESC(sca_mult, " the image size multiplier");
 struct vimc_sca_device {
 	struct vimc_ent_device ved;
 	struct v4l2_subdev sd;
+	struct device *dev;
 	/* NOTE: the source fmt is the same as the sink
 	 * with the width and hight multiplied by mult
 	 */
@@ -196,7 +201,7 @@ static int vimc_sca_set_fmt(struct v4l2_subdev *sd,
 		/* Set the new format in the sink pad */
 		vimc_sca_adjust_sink_fmt(&fmt->format);
 
-		dev_dbg(vsca->sd.v4l2_dev->mdev->dev, "%s: sink format update: "
+		dev_dbg(vsca->dev, "%s: sink format update: "
 			"old:%dx%d (0x%x, %d, %d, %d, %d) "
 			"new:%dx%d (0x%x, %d, %d, %d, %d)\n", vsca->sd.name,
 			/* old */
@@ -309,7 +314,7 @@ static void vimc_sca_scale_pix(const struct vimc_sca_device *const vsca,
 				 vsca->bpp);
 	pixel = &sink_frame[index];
 
-	dev_dbg(vsca->sd.v4l2_dev->mdev->dev,
+	dev_dbg(vsca->dev,
 		"sca: %s: --- scale_pix sink pos %dx%d, index %d ---\n",
 		vsca->sd.name, lin, col, index);
 
@@ -319,8 +324,7 @@ static void vimc_sca_scale_pix(const struct vimc_sca_device *const vsca,
 	index = VIMC_FRAME_INDEX(lin * sca_mult, col * sca_mult,
 				 vsca->sink_fmt.width * sca_mult, vsca->bpp);
 
-	dev_dbg(vsca->sd.v4l2_dev->mdev->dev,
-		"sca: %s: scale_pix src pos %dx%d, index %d\n",
+	dev_dbg(vsca->dev, "sca: %s: scale_pix src pos %dx%d, index %d\n",
 		vsca->sd.name, lin * sca_mult, col * sca_mult, index);
 
 	/* Repeat this pixel mult times */
@@ -329,7 +333,7 @@ static void vimc_sca_scale_pix(const struct vimc_sca_device *const vsca,
 		 * pixel repetition in a line
 		 */
 		for (j = 0; j < sca_mult * vsca->bpp; j += vsca->bpp) {
-			dev_dbg(vsca->sd.v4l2_dev->mdev->dev,
+			dev_dbg(vsca->dev,
 				"sca: %s: sca: scale_pix src pos %d\n",
 				vsca->sd.name, index + j);
 
@@ -377,8 +381,10 @@ static void vimc_sca_process_frame(struct vimc_ent_device *ved,
 	}
 };
 
-static void vimc_sca_destroy(struct vimc_ent_device *ved)
+static void vimc_sca_comp_unbind(struct device *comp, struct device *master,
+				 void *master_data)
 {
+	struct vimc_ent_device *ved = dev_get_drvdata(comp);
 	struct vimc_sca_device *vsca = container_of(ved, struct vimc_sca_device,
 						    ved);
 
@@ -386,46 +392,83 @@ static void vimc_sca_destroy(struct vimc_ent_device *ved)
 	kfree(vsca);
 }
 
-struct vimc_ent_device *vimc_sca_create(struct v4l2_device *v4l2_dev,
-					const char *const name,
-					u16 num_pads,
-					const unsigned long *pads_flag)
+
+static int vimc_sca_comp_bind(struct device *comp, struct device *master,
+			      void *master_data)
 {
+	struct v4l2_device *v4l2_dev = master_data;
+	char *name = comp->platform_data;
 	struct vimc_sca_device *vsca;
-	unsigned int i;
 	int ret;
-
-	/* check pads types
-	 * NOTE: we support a single sink pad and multiple source pads
-	 * the sink pad must be the first
-	 */
-	if (num_pads < 2 || !(pads_flag[0] & MEDIA_PAD_FL_SINK))
-		return ERR_PTR(-EINVAL);
-
-	/* check if the rest of pads are sources */
-	for (i = 1; i < num_pads; i++)
-		if (!(pads_flag[i] & MEDIA_PAD_FL_SOURCE))
-			return ERR_PTR(-EINVAL);
 
 	/* Allocate the vsca struct */
 	vsca = kzalloc(sizeof(*vsca), GFP_KERNEL);
 	if (!vsca)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	/* Initialize ved and sd */
 	ret = vimc_ent_sd_register(&vsca->ved, &vsca->sd, v4l2_dev, name,
-				   MEDIA_ENT_F_ATV_DECODER, num_pads, pads_flag,
-				   &vimc_sca_ops, vimc_sca_destroy);
+				   MEDIA_ENT_F_ATV_DECODER, 2,
+				   (const unsigned long[2]){MEDIA_PAD_FL_SINK,
+				   MEDIA_PAD_FL_SOURCE},
+				   &vimc_sca_ops);
 	if (ret) {
 		kfree(vsca);
-		return ERR_PTR(ret);
+		return ret;
 	}
+
+	vsca->ved.process_frame = vimc_sca_process_frame;
+	dev_set_drvdata(comp, &vsca->ved);
+	vsca->dev = comp;
 
 	/* Initialize the frame format */
 	vsca->sink_fmt = sink_fmt_default;
 
-	/* Set the process frame callback */
-	vsca->ved.process_frame = vimc_sca_process_frame;
-
-	return &vsca->ved;
+	return 0;
 }
+
+static const struct component_ops vimc_sca_comp_ops = {
+	.bind = vimc_sca_comp_bind,
+	.unbind = vimc_sca_comp_unbind,
+};
+
+static int vimc_sca_probe(struct platform_device *pdev) {
+	return component_add(&pdev->dev, &vimc_sca_comp_ops);
+}
+
+static int vimc_sca_remove(struct platform_device *pdev) {
+	component_del(&pdev->dev, &vimc_sca_comp_ops);
+
+	return 0;
+}
+
+static struct platform_driver vimc_sca_pdrv = {
+	.probe		= vimc_sca_probe,
+	.remove		= vimc_sca_remove,
+	.driver		= {
+		.name	= VIMC_SCA_DRV_NAME,
+	},
+};
+
+static int __init vimc_sca_init(void) {
+	return platform_driver_register(&vimc_sca_pdrv);
+}
+
+static void __exit vimc_sca_exit(void) {
+	platform_driver_unregister(&vimc_sca_pdrv);
+}
+
+static const struct platform_device_id vimc_sca_driver_ids[] = {
+	{
+		.name           = VIMC_SCA_DRV_NAME,
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, vimc_sca_driver_ids);
+
+module_init(vimc_sca_init);
+module_exit(vimc_sca_exit);
+
+MODULE_DESCRIPTION("Virtual Media Controller Driver (VIMC) Scaler");
+MODULE_AUTHOR("Helen Mae Koike Fornazier <helen.fornazier@gmail.com>");
+MODULE_LICENSE("GPL");
