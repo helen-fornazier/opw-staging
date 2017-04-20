@@ -15,15 +15,19 @@
  *
  */
 
-#include <linux/module.h>
+#include <linux/component.h>
 #include <linux/freezer.h>
 #include <linux/kthread.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/v4l2-mediabus.h>
 #include <linux/vmalloc.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-tpg.h>
 
-#include "vimc-sensor.h"
+#include "vimc-common.h"
+
+#define VIMC_SEN_DRV_NAME "vimc-sensor"
 
 static bool vsen_tpg;
 module_param(vsen_tpg, bool, 0000);
@@ -35,6 +39,7 @@ MODULE_PARM_DESC(vsen_tpg, " generate image from sensor node\n"
 struct vimc_sen_device {
 	struct vimc_ent_device ved;
 	struct v4l2_subdev sd;
+	struct device *dev;
 	struct tpg_data tpg;
 	struct task_struct *kthread_sen;
 	u8 *frame;
@@ -190,7 +195,7 @@ static int vimc_sen_set_fmt(struct v4l2_subdev *sd,
 	/* Set the new format */
 	vimc_sen_adjust_fmt(&fmt->format);
 
-	dev_dbg(vsen->sd.v4l2_dev->mdev->dev, "%s: format update: "
+	dev_dbg(vsen->dev, "%s: format update: "
 		"old:%dx%d (0x%x, %d, %d, %d, %d) "
 		"new:%dx%d (0x%x, %d, %d, %d, %d)\n", vsen->sd.name,
 		/* old */
@@ -283,8 +288,8 @@ static int vimc_sen_s_stream(struct v4l2_subdev *sd, int enable)
 		vsen->kthread_sen = kthread_run(vimc_sen_tpg_thread, vsen, "%s-sen",
 						vsen->sd.v4l2_dev->name);
 		if (IS_ERR(vsen->kthread_sen)) {
-			dev_err(vsen->sd.v4l2_dev->dev,
-				"%s: kernel_thread() failed\n",	vsen->sd.name);
+			dev_err(vsen->dev, "%s: kernel_thread() failed\n",
+				vsen->sd.name);
 			vfree(vsen->frame);
 			vsen->frame = NULL;
 			return PTR_ERR(vsen->kthread_sen);
@@ -316,8 +321,10 @@ static const struct v4l2_subdev_ops vimc_sen_ops = {
 	.video = &vimc_sen_video_ops,
 };
 
-static void vimc_sen_destroy(struct vimc_ent_device *ved)
+static void vimc_sen_comp_unbind(struct device *comp, struct device *master,
+				 void *master_data)
 {
+	struct vimc_ent_device *ved = dev_get_drvdata(comp);
 	struct vimc_sen_device *vsen =
 				container_of(ved, struct vimc_sen_device, ved);
 
@@ -327,35 +334,29 @@ static void vimc_sen_destroy(struct vimc_ent_device *ved)
 	kfree(vsen);
 }
 
-struct vimc_ent_device *vimc_sen_create(struct v4l2_device *v4l2_dev,
-					const char *const name,
-					u16 num_pads,
-					const unsigned long *pads_flag)
+static int vimc_sen_comp_bind(struct device *comp, struct device *master,
+			      void *master_data)
 {
+	struct v4l2_device *v4l2_dev = master_data;
+	char *name = comp->platform_data;
 	struct vimc_sen_device *vsen;
-	unsigned int i;
 	int ret;
-
-	/* NOTE: a sensor node may be created with more then one pad */
-	if (!name || !num_pads || !pads_flag)
-		return ERR_PTR(-EINVAL);
-
-	/* check if all pads are sources */
-	for (i = 0; i < num_pads; i++)
-		if (!(pads_flag[i] & MEDIA_PAD_FL_SOURCE))
-			return ERR_PTR(-EINVAL);
 
 	/* Allocate the vsen struct */
 	vsen = kzalloc(sizeof(*vsen), GFP_KERNEL);
 	if (!vsen)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	/* Initialize ved and sd */
 	ret = vimc_ent_sd_register(&vsen->ved, &vsen->sd, v4l2_dev, name,
-				   MEDIA_ENT_F_CAM_SENSOR, num_pads, pads_flag,
-				   &vimc_sen_ops, vimc_sen_destroy);
+				   MEDIA_ENT_F_ATV_DECODER, 1,
+				   (const unsigned long[1]){MEDIA_PAD_FL_SOURCE},
+				   &vimc_sen_ops);
 	if (ret)
 		goto err_free_vsen;
+
+	dev_set_drvdata(comp, &vsen->ved);
+	vsen->dev = comp;
 
 	/* Initialize the frame format */
 	vsen->mbus_format = fmt_default;
@@ -369,12 +370,58 @@ struct vimc_ent_device *vimc_sen_create(struct v4l2_device *v4l2_dev,
 			goto err_unregister_ent_sd;
 	}
 
-	return &vsen->ved;
+	return 0;
 
 err_unregister_ent_sd:
 	vimc_ent_sd_unregister(&vsen->ved,  &vsen->sd);
 err_free_vsen:
 	kfree(vsen);
 
-	return ERR_PTR(ret);
+	return ret;
 }
+
+static const struct component_ops vimc_sen_comp_ops = {
+	.bind = vimc_sen_comp_bind,
+	.unbind = vimc_sen_comp_unbind,
+};
+
+static int vimc_sen_probe(struct platform_device *pdev) {
+	return component_add(&pdev->dev, &vimc_sen_comp_ops);
+}
+
+static int vimc_sen_remove(struct platform_device *pdev) {
+	component_del(&pdev->dev, &vimc_sen_comp_ops);
+
+	return 0;
+}
+
+static struct platform_driver vimc_sen_pdrv = {
+	.probe		= vimc_sen_probe,
+	.remove		= vimc_sen_remove,
+	.driver		= {
+		.name	= VIMC_SEN_DRV_NAME,
+	},
+};
+
+static int __init vimc_sen_init(void) {
+	return platform_driver_register(&vimc_sen_pdrv);
+}
+
+static void __exit vimc_sen_exit(void) {
+	platform_driver_unregister(&vimc_sen_pdrv);
+}
+
+static const struct platform_device_id vimc_sen_driver_ids[] = {
+	{
+		.name           = VIMC_SEN_DRV_NAME,
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, vimc_sen_driver_ids);
+
+module_init(vimc_sen_init);
+module_exit(vimc_sen_exit);
+
+MODULE_DESCRIPTION("Virtual Media Controller Driver (VIMC) Sensor");
+MODULE_AUTHOR("Helen Mae Koike Fornazier <helen.fornazier@gmail.com>");
+MODULE_LICENSE("GPL");

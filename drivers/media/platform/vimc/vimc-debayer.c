@@ -15,12 +15,16 @@
  *
  */
 
+#include <linux/component.h>
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/vmalloc.h>
 #include <linux/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
-#include "vimc-debayer.h"
+#include "vimc-common.h"
+
+#define VIMC_DEB_DRV_NAME "vimc-debayer"
 
 static unsigned int deb_mean_win_size = 3;
 module_param(deb_mean_win_size, uint, 0000);
@@ -46,6 +50,7 @@ struct vimc_deb_pix_map {
 struct vimc_deb_device {
 	struct vimc_ent_device ved;
 	struct v4l2_subdev sd;
+	struct device *dev;
 	/* The active format */
 	struct v4l2_mbus_framefmt sink_fmt;
 	u32 src_code;
@@ -288,7 +293,7 @@ static int vimc_deb_set_fmt(struct v4l2_subdev *sd,
 		/* Set the new format in the sink pad */
 		vimc_deb_adjust_sink_fmt(&fmt->format);
 
-		dev_dbg(vdeb->sd.v4l2_dev->mdev->dev, "%s: sink format update: "
+		dev_dbg(vdeb->dev, "%s: sink format update: "
 			"old:%dx%d (0x%x, %d, %d, %d, %d) "
 			"new:%dx%d (0x%x, %d, %d, %d, %d)\n", vdeb->sd.name,
 			/* old */
@@ -424,7 +429,7 @@ static void vimc_deb_calc_rgb_sink(struct vimc_deb_device *vdeb,
 
 	/* Sum the values of the colors in the mean window */
 
-	dev_dbg(vdeb->sd.v4l2_dev->mdev->dev,
+	dev_dbg(vdeb->dev,
 		"deb: %s: --- Calc pixel %dx%d, window mean %d, seek %d ---\n",
 		vdeb->sd.name, lin, col, vdeb->sink_fmt.height, seek);
 
@@ -457,7 +462,7 @@ static void vimc_deb_calc_rgb_sink(struct vimc_deb_device *vdeb,
 						 vdeb->sink_fmt.width,
 						 vdeb->sink_bpp);
 
-			dev_dbg(vdeb->sd.v4l2_dev->mdev->dev,
+			dev_dbg(vdeb->dev,
 				"deb: %s: RGB CALC: frame index %d, win pos %dx%d, color %d\n",
 				vdeb->sd.name, index, wlin, wcol, color);
 
@@ -468,22 +473,21 @@ static void vimc_deb_calc_rgb_sink(struct vimc_deb_device *vdeb,
 			/* Save how many values we already added */
 			n_rgb[color]++;
 
-			dev_dbg(vdeb->sd.v4l2_dev->mdev->dev,
-				"deb: %s: RGB CALC: val %d, n %d\n",
+			dev_dbg(vdeb->dev, "deb: %s: RGB CALC: val %d, n %d\n",
 				vdeb->sd.name, rgb[color], n_rgb[color]);
 		}
 	}
 
 	/* Calculate the mean */
 	for (i = 0; i < 3; i++) {
-		dev_dbg(vdeb->sd.v4l2_dev->mdev->dev,
+		dev_dbg(vdeb->dev,
 			"deb: %s: PRE CALC: %dx%d Color %d, val %d, n %d\n",
 			vdeb->sd.name, lin, col, i, rgb[i], n_rgb[i]);
 
 		if (n_rgb[i])
 			rgb[i] = rgb[i] / n_rgb[i];
 
-		dev_dbg(vdeb->sd.v4l2_dev->mdev->dev,
+		dev_dbg(vdeb->dev,
 			"deb: %s: FINAL CALC: %dx%d Color %d, val %d\n",
 			vdeb->sd.name, lin, col, i, rgb[i]);
 	}
@@ -516,8 +520,10 @@ static void vimc_deb_process_frame(struct vimc_ent_device *ved,
 	}
 }
 
-static void vimc_deb_destroy(struct vimc_ent_device *ved)
+static void vimc_deb_comp_unbind(struct device *comp, struct device *master,
+				 void *master_data)
 {
+	struct vimc_ent_device *ved = dev_get_drvdata(comp);
 	struct vimc_deb_device *vdeb = container_of(ved, struct vimc_deb_device,
 						    ved);
 
@@ -525,40 +531,33 @@ static void vimc_deb_destroy(struct vimc_ent_device *ved)
 	kfree(vdeb);
 }
 
-struct vimc_ent_device *vimc_deb_create(struct v4l2_device *v4l2_dev,
-					const char *const name,
-					u16 num_pads,
-					const unsigned long *pads_flag)
+static int vimc_deb_comp_bind(struct device *comp, struct device *master,
+			      void *master_data)
 {
+	struct v4l2_device *v4l2_dev = master_data;
+	char *name = comp->platform_data;
 	struct vimc_deb_device *vdeb;
-	unsigned int i;
 	int ret;
-
-	/* check pads types
-	 * NOTE: we support a single sink pad and multiple source pads
-	 * the sink pad must be the first
-	 */
-	if (num_pads < 2 || !(pads_flag[0] & MEDIA_PAD_FL_SINK))
-		return ERR_PTR(-EINVAL);
-
-	/* check if the rest of pads are sources */
-	for (i = 1; i < num_pads; i++)
-		if (!(pads_flag[i] & MEDIA_PAD_FL_SOURCE))
-			return ERR_PTR(-EINVAL);
 
 	/* Allocate the vdeb struct */
 	vdeb = kzalloc(sizeof(*vdeb), GFP_KERNEL);
 	if (!vdeb)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	/* Initialize ved and sd */
 	ret = vimc_ent_sd_register(&vdeb->ved, &vdeb->sd, v4l2_dev, name,
-				   MEDIA_ENT_F_ATV_DECODER, num_pads, pads_flag,
-				   &vimc_deb_ops, vimc_deb_destroy);
+				   MEDIA_ENT_F_ATV_DECODER, 2,
+				   (const unsigned long[2]){MEDIA_PAD_FL_SINK,
+				   MEDIA_PAD_FL_SOURCE},
+				   &vimc_deb_ops);
 	if (ret) {
 		kfree(vdeb);
-		return ERR_PTR(ret);
+		return ret;
 	}
+
+	vdeb->ved.process_frame = vimc_deb_process_frame;
+	dev_set_drvdata(comp, &vdeb->ved);
+	vdeb->dev = comp;
 
 	/* Initialize the frame format */
 	vdeb->sink_fmt = sink_fmt_default;
@@ -570,8 +569,51 @@ struct vimc_ent_device *vimc_deb_create(struct v4l2_device *v4l2_dev,
 	vdeb->src_code = MEDIA_BUS_FMT_RGB888_1X24;
 	vdeb->set_rgb_src = vimc_deb_set_rgb_mbus_fmt_rgb888_1x24;
 
-	/* Set the process frame callback */
-	vdeb->ved.process_frame = vimc_deb_process_frame;
-
-	return &vdeb->ved;
+	return 0;
 }
+
+static const struct component_ops vimc_deb_comp_ops = {
+	.bind = vimc_deb_comp_bind,
+	.unbind = vimc_deb_comp_unbind,
+};
+
+static int vimc_deb_probe(struct platform_device *pdev) {
+	return component_add(&pdev->dev, &vimc_deb_comp_ops);
+}
+
+static int vimc_deb_remove(struct platform_device *pdev) {
+	component_del(&pdev->dev, &vimc_deb_comp_ops);
+
+	return 0;
+}
+
+static struct platform_driver vimc_deb_pdrv = {
+	.probe		= vimc_deb_probe,
+	.remove		= vimc_deb_remove,
+	.driver		= {
+		.name	= VIMC_DEB_DRV_NAME,
+	},
+};
+
+static int __init vimc_deb_init(void) {
+	return platform_driver_register(&vimc_deb_pdrv);
+}
+
+static void __exit vimc_deb_exit(void) {
+	platform_driver_unregister(&vimc_deb_pdrv);
+}
+
+static const struct platform_device_id vimc_deb_driver_ids[] = {
+	{
+		.name           = VIMC_DEB_DRV_NAME,
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, vimc_deb_driver_ids);
+
+module_init(vimc_deb_init);
+module_exit(vimc_deb_exit);
+
+MODULE_DESCRIPTION("Virtual Media Controller Driver (VIMC) Debayer");
+MODULE_AUTHOR("Helen Mae Koike Fornazier <helen.fornazier@gmail.com>");
+MODULE_LICENSE("GPL");
