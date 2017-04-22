@@ -216,7 +216,37 @@ static const struct v4l2_file_operations vimc_vdev_fops = {
 	.mmap           = vb2_fop_mmap,
 };
 
+static int vimc_cap_enum_input(struct file *file, void *priv,
+                              struct v4l2_input *i)
+{
+       /* We only have one input */
+       if (i->index > 0)
+               return -EINVAL;
+
+       i->type = V4L2_INPUT_TYPE_CAMERA;
+       strlcpy(i->name, "VIMC capture", sizeof(i->name));
+
+       return 0;
+}
+
+static int vimc_cap_g_input(struct file *file, void *priv, unsigned int *i)
+{
+       /* We only have one input */
+       *i = 0;
+       return 0;
+}
+
+static int vimc_cap_s_input(struct file *file, void *priv, unsigned int i)
+{
+       /* We only have one input */
+       return i ? -EINVAL : 0;
+}
+
 static const struct v4l2_ioctl_ops vimc_vdev_ioctl_ops = {
+	.vidioc_enum_input = vimc_cap_enum_input,
+	.vidioc_g_input = vimc_cap_g_input,
+	.vidioc_s_input = vimc_cap_s_input,
+
 	.vidioc_querycap = vimc_vdev_querycap,
 
 	.vidioc_g_fmt_vid_cap = vimc_vdev_g_fmt_vid,
