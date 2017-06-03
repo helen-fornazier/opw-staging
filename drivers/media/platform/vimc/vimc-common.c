@@ -252,8 +252,130 @@ int vimc_pipeline_s_stream(struct media_entity *ent, int enable)
 	return 0;
 }
 
+static void vimc_fmt_pix_to_mbus(struct v4l2_mbus_framefmt *mfmt,
+				 struct v4l2_pix_format *pfmt)
+{
+	const struct vimc_pix_map *vpix =
+		vimc_pix_map_by_pixelformat(pfmt->pixelformat);
+
+	mfmt->width = pfmt->width;
+	mfmt->height = pfmt->height;
+	mfmt->code = vpix->code;
+	mfmt->field = pfmt->field;
+	mfmt->colorspace = pfmt->colorspace;
+	mfmt->ycbcr_enc = pfmt->ycbcr_enc;
+	mfmt->quantization = pfmt->quantization;
+	mfmt->xfer_func = pfmt->xfer_func;
+}
+
+static int vimc_get_mbus_format(struct media_pad *pad,
+				struct v4l2_subdev_format *fmt)
+{
+	if (is_media_entity_v4l2_subdev(pad->entity)) {
+		struct v4l2_subdev *sd =
+			media_entity_to_v4l2_subdev(pad->entity);
+		int ret;
+
+		fmt->which = V4L2_SUBDEV_FORMAT_ACTIVE;
+		fmt->pad = pad->index;
+
+		ret = v4l2_subdev_call(sd, pad, get_fmt, NULL, fmt);
+		if (ret)
+			return ret;
+
+	} else if (is_media_entity_v4l2_video_device(pad->entity)) {
+		struct video_device *vdev = container_of(pad->entity,
+							 struct video_device,
+							 entity);
+		struct vimc_ent_device *ved = video_get_drvdata(vdev);
+		struct v4l2_pix_format vdev_fmt;
+
+		if (!ved->vdev_get_format)
+			return -ENOIOCTLCMD;
+
+		ved->vdev_get_format(ved, &vdev_fmt);
+		vimc_fmt_pix_to_mbus(&fmt->format, &vdev_fmt);
+	} else {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int vimc_link_validate(struct media_link *link)
+{
+	struct v4l2_subdev_format source_fmt, sink_fmt;
+	int ret;
+
+	/*
+	 * if it is a raw node from vimc-core, ignore the link for now
+	 * TODO: remove this when there are no more raw nodes in the
+	 * core and return error instead
+	 */
+	if (link->source->entity->obj_type == MEDIA_ENTITY_TYPE_BASE)
+		return 0;
+
+	ret = vimc_get_mbus_format(link->source, &source_fmt);
+	if (ret)
+		return ret;
+
+	ret = vimc_get_mbus_format(link->sink, &sink_fmt);
+	if (ret)
+		return ret;
+
+	pr_info("vimc link validate: "
+		"%s:src:%dx%d (0x%x, %d, %d, %d, %d) "
+		"%s:snk:%dx%d (0x%x, %d, %d, %d, %d)\n",
+		/* src */
+		link->source->entity->name,
+		source_fmt.format.width, source_fmt.format.height,
+		source_fmt.format.code, source_fmt.format.colorspace,
+		source_fmt.format.quantization, source_fmt.format.xfer_func,
+		source_fmt.format.ycbcr_enc,
+		/* sink */
+		link->sink->entity->name,
+		sink_fmt.format.width, sink_fmt.format.height,
+		sink_fmt.format.code, sink_fmt.format.colorspace,
+		sink_fmt.format.quantization, sink_fmt.format.xfer_func,
+		sink_fmt.format.ycbcr_enc);
+
+	/* The width, height, code and colorspace must match. */
+	if (source_fmt.format.width != sink_fmt.format.width
+	    || source_fmt.format.height != sink_fmt.format.height
+	    || source_fmt.format.code != sink_fmt.format.code
+	    || source_fmt.format.colorspace != sink_fmt.format.colorspace)
+		return -EPIPE;
+
+	/* Colorimetry must match if they are not set to DEFAULT */
+	if (source_fmt.format.ycbcr_enc != V4L2_YCBCR_ENC_DEFAULT
+	    && sink_fmt.format.ycbcr_enc != V4L2_YCBCR_ENC_DEFAULT
+	    && source_fmt.format.ycbcr_enc != sink_fmt.format.ycbcr_enc)
+		return -EPIPE;
+
+	if (source_fmt.format.quantization != V4L2_QUANTIZATION_DEFAULT
+	    && sink_fmt.format.quantization != V4L2_QUANTIZATION_DEFAULT
+	    && source_fmt.format.quantization != sink_fmt.format.quantization)
+		return -EPIPE;
+
+	if (source_fmt.format.xfer_func != V4L2_XFER_FUNC_DEFAULT
+	    && sink_fmt.format.xfer_func != V4L2_XFER_FUNC_DEFAULT
+	    && source_fmt.format.xfer_func != sink_fmt.format.xfer_func)
+		return -EPIPE;
+
+	/* The field order must match, or the sink field order must be NONE
+	 * to support interlaced hardware connected to bridges that support
+	 * progressive formats only.
+	 */
+	if (source_fmt.format.field != sink_fmt.format.field &&
+	    sink_fmt.format.field != V4L2_FIELD_NONE)
+		return -EPIPE;
+
+	return 0;
+}
+EXPORT_SYMBOL(vimc_link_validate);
+
 static const struct media_entity_operations vimc_ent_sd_mops = {
-	.link_validate = v4l2_subdev_link_validate,
+	.link_validate = vimc_link_validate,
 };
 
 int vimc_ent_sd_register(struct vimc_ent_device *ved,
