@@ -508,6 +508,44 @@ int v4l2_subdev_link_validate_default(struct v4l2_subdev *sd,
 	    || source_fmt->format.code != sink_fmt->format.code)
 		return -EPIPE;
 
+	/*
+	 * TODO: return -EPIPE instead of printing a warning in the following
+	 * checks. As colorimetry properties were added after most of the
+	 * drivers, only a warning was added to avoid potential regressions
+	 */
+
+	/* colorspace match. */
+	if (source_fmt->format.colorspace != sink_fmt->format.colorspace)
+		dev_warn(sd->v4l2_dev->dev,
+			 "colorspace doesn't match in link \"%s\":%d->\"%s\":%d\n",
+			link->source->entity->name, link->source->index,
+			link->sink->entity->name, link->sink->index);
+
+	/* Colorimetry must match if they are not set to DEFAULT */
+	if (source_fmt->format.ycbcr_enc != V4L2_YCBCR_ENC_DEFAULT
+	    && sink_fmt->format.ycbcr_enc != V4L2_YCBCR_ENC_DEFAULT
+	    && source_fmt->format.ycbcr_enc != sink_fmt->format.ycbcr_enc)
+		dev_warn(sd->v4l2_dev->dev,
+			 "YCbCr encoding doesn't match in link \"%s\":%d->\"%s\":%d\n",
+			link->source->entity->name, link->source->index,
+			link->sink->entity->name, link->sink->index);
+
+	if (source_fmt->format.quantization != V4L2_QUANTIZATION_DEFAULT
+	    && sink_fmt->format.quantization != V4L2_QUANTIZATION_DEFAULT
+	    && source_fmt->format.quantization != sink_fmt->format.quantization)
+		dev_warn(sd->v4l2_dev->dev,
+			 "quantization doesn't match in link \"%s\":%d->\"%s\":%d\n",
+			link->source->entity->name, link->source->index,
+			link->sink->entity->name, link->sink->index);
+
+	if (source_fmt->format.xfer_func != V4L2_XFER_FUNC_DEFAULT
+	    && sink_fmt->format.xfer_func != V4L2_XFER_FUNC_DEFAULT
+	    && source_fmt->format.xfer_func != sink_fmt->format.xfer_func)
+		dev_warn(sd->v4l2_dev->dev,
+			 "transfer function doesn't match in link \"%s\":%d->\"%s\":%d\n",
+			link->source->entity->name, link->source->index,
+			link->sink->entity->name, link->sink->index);
+
 	/* The field order must match, or the sink field order must be NONE
 	 * to support interlaced hardware connected to bridges that support
 	 * progressive formats only.
